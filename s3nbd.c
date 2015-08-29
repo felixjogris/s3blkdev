@@ -1,11 +1,15 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <err.h>
 #include <netdb.h>
 #include <errno.h>
+#include <arpa/inet.h>
+
+#define __USE_GNU
 #include <pthread.h>
 
 struct client_thread_arg {
@@ -14,16 +18,52 @@ struct client_thread_arg {
  socklen_t addr_len;
 };
 
+void set_client_thread_name (struct client_thread_arg *client)
+{
+  char name[16], addr[INET6_ADDRSTRLEN];
+  struct sockaddr_in *sin;
+  struct sockaddr_in6 *sin6;
+
+  switch (client->addr.sa_family) {
+    case AF_INET:
+      sin = (struct sockaddr_in*) &client->addr;
+      snprintf(name, sizeof(name), "client %s:%u",
+               inet_ntop(sin->sin_family, &sin->sin_addr, addr, sizeof(addr)),
+               htons(sin->sin_port));
+      break;
+    case AF_INET6:
+      sin6 = (struct sockaddr_in6*) &client->addr;
+      snprintf(name, sizeof(name), "client [%s]:%u",
+               inet_ntop(sin6->sin6_family, &sin6->sin6_addr, addr,
+                         sizeof(addr)),
+               htons(sin6->sin6_port));
+      break;
+    default:
+      snprintf(name, sizeof(name), "client %s", "<unknown address family>");
+      break;
+  }
+puts(name);
+  pthread_setname_np(pthread_self(), name);
+}
+
 void *client_worker (void *arg) {
   struct client_thread_arg *client = (struct client_thread_arg*) arg;
+  char name[128];
 
+  pthread_setname_np(pthread_self(), "client worker");
+
+  write(client->socket, "BLA\n", 4);
+  read(client->socket, name, 120);
+
+ERROR:
+  close(client->socket);
   free(arg);
   return NULL;
 }
 
 int main (int argc, char **argv)
 {
-  int running, error, listen_socket;
+  int running, error, listen_socket, opt;
   struct addrinfo hints, *result, *walk;
   pthread_attr_t thread_attr;
   pthread_t thread;
@@ -39,13 +79,27 @@ int main (int argc, char **argv)
 
   for (walk = result; walk != NULL; walk = walk->ai_next) {
     listen_socket = socket(walk->ai_family, walk->ai_socktype, 0);
-    if ((listen_socket >= 0) &&
-        (bind(listen_socket, walk->ai_addr, walk->ai_addrlen) == 0)) break;
-    close(listen_socket);
+    if (listen_socket < 0) {
+      warn("socket()");
+      continue;
+    }
+
+    if (bind(listen_socket, walk->ai_addr, walk->ai_addrlen) != 0) {
+      warn("bind()");
+      close(listen_socket);
+      continue;
+    }
+
+    break;
   }
 
-  if (walk == NULL) errx(1, "cannot bind");
+  if (walk == NULL) errx(1, "cannot bind socket");
   freeaddrinfo(result);
+
+  opt = 1;
+  error = setsockopt(listen_socket, SOL_SOCKET, SO_REUSEPORT, &opt,
+                     sizeof(opt));
+  if (error != 0) err(1, "setsockopt()");
 
   if (listen(listen_socket, 0) != 0) err(1, "listen()");
 
