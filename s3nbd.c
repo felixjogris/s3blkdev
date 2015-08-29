@@ -283,12 +283,46 @@ int create_listen_socket (char *ip, char *port)
   return listen_socket;
 }
 
+void show_help ()
+{
+  puts(
+"Usage:\n"
+"\n"
+"s3nbd [-c <config directory>] [-f] [-l <ip>] [-p <port>]\n"
+"s3nbd -h\n"
+"\n"
+"  -c <config directory>    read config options from specified directory\n"
+"                           instead of /etc/s3nbd\n"
+"\n"
+"  -f                       run in foreground, don't daemonize\n"
+"\n"
+"  -l <ip>                  listen on specified IPv4/IPv6 address, or \n"
+"                           Unix socket; default: 0.0.0.0\n"
+"\n"
+"  -p <port>                listen on specified port instead of 10809\n"
+"\n"
+"  -h                       show this help ;-)\n"
+);
+}
+
 int main (int argc, char **argv)
 {
-  int listen_socket, res;
+  char *ip = "0.0.0.0", *port = "10809", *configdir = "/etc/s3nbd";
+  int foreground = 0, listen_socket, res;
   pthread_attr_t thread_attr;
   pthread_t thread;
   struct client_thread_arg *thread_arg;
+
+  while ((res = getopt(argc, argv, "hc:fl:p:")) != -1) {
+    switch (res) {
+      case 'c': configdir = optarg; break;
+      case 'f': foreground = 1; break;
+      case 'l': ip = optarg; break;
+      case 'p': port = optarg; break;
+      case 'h': show_help(); return 0;
+      default: errx(1, "Unknown option '%i'. Use -h for help.", res);
+    }
+  }
 
   block_signals();
 //  listen_socket = create_listen_socket("127.0.0.1", "10809");
