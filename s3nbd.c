@@ -9,9 +9,24 @@
 #include <errno.h>
 #include <arpa/inet.h>
 #include <signal.h>
+#include <sys/un.h>
 
 #define __USE_GNU
 #include <pthread.h>
+
+const char const NBD_SERVER_HELLO[] = { 'N','B','D','M','A','G','I','C',
+                                        'I','H','A','V','E','O','P','T',
+                                         0, 1 };
+const char const NBD_REPLY_MAGIC[] = { 0x00, 0x03, 0xe8, 0x89,
+                                       0x04, 0x55, 0x65, 0xa9 };
+#define NBD_OPT_EXPORT_NAME 1
+#define NBD_OPT_ABORT 2
+#define NBD_OPT_LIST 3
+#define NBD_REP_ACK 1
+#define NBD_REP_SERVER 2
+#define NBD_REP_ERR_UNSUP 0x80000001
+#define NBD_REP_ERR_INVALID 0x80000003
+#define NBD_BUFSIZE 1024
 
 struct client_thread_arg {
  int socket;
@@ -49,14 +64,129 @@ puts(name);
   pthread_setname_np(pthread_self(), name);
 }
 
+int nbd_send_reply (int socket, uint32_t opt_type, uint32_t reply_type,
+                    char *reply_data)
+{
+  uint32_t reply_len;
+  int len;
+
+  if (write(socket, NBD_REPLY_MAGIC, sizeof(NBD_REPLY_MAGIC)) != sizeof(NBD_REPLY_MAGIC))
+    return -1;
+
+  if (write(socket, &opt_type, sizeof(opt_type)) != sizeof(opt_type))
+    return -1;
+
+  reply_type = htonl(reply_type);
+  if (write(socket, &reply_type, sizeof(reply_type)) != sizeof(reply_type))
+    return -1;
+
+  if ((reply_data == NULL) || (*reply_data == '\0')) {
+    reply_len = 0;
+    if (write(socket, &reply_len, sizeof(reply_len)) != sizeof(reply_len))
+      return -1;
+  } else {
+    len = strlen(reply_data);
+    reply_len = htonl(len + sizeof(reply_len));
+    if (write(socket, &reply_len, sizeof(reply_len)) != sizeof(reply_len))
+      return -1;
+
+    reply_len = htonl(len);
+    if (write(socket, &reply_len, sizeof(reply_len)) != sizeof(reply_len))
+      return -1;
+
+    if (write(socket, reply_data, len) != len)
+      return -1;
+  }
+
+  return 0;
+}
+
+int nbd_send_devicelist (int socket, uint32_t opt_type)
+{
+  char *devlist[]={"brwatzwurt", "klowasser"};
+  unsigned int i;
+
+  for (i = 0; i < sizeof(devlist)/sizeof(devlist[0]); i++) {
+    if (nbd_send_reply(socket, opt_type, NBD_REP_SERVER, devlist[i]))
+      return -1;
+  }
+
+  return nbd_send_reply(socket, opt_type, NBD_REP_ACK, NULL);
+}
+
+int nbd_handshake (int socket, char *devicename)
+{
+  uint32_t flags, opt_type, opt_len;
+  char ihaveopt[8];
+
+  if (write(socket, NBD_SERVER_HELLO, sizeof(NBD_SERVER_HELLO)) != sizeof(NBD_SERVER_HELLO))
+    return -1;
+
+  if (read(socket, &flags, sizeof(flags)) != sizeof(flags))
+    return -1;
+
+  if (ntohl(flags) != 1)
+    return -1;
+
+  for (;;) {
+    if (read(socket, ihaveopt, sizeof(ihaveopt)) != sizeof(ihaveopt))
+      return -1;
+
+    if (memcmp(ihaveopt, "IHAVEOPT", 8) != 0)
+      return -1;
+
+    if (read(socket, &opt_type, sizeof(opt_type)) != sizeof(opt_type))
+      return -1;
+
+    if (read(socket, &opt_len, sizeof(opt_len)) != sizeof(opt_len))
+      return -1;
+
+    opt_len = ntohl(opt_len);
+    if (opt_len >= NBD_BUFSIZE) {
+      nbd_send_reply(socket, opt_type, NBD_REP_ERR_INVALID, NULL);
+      return -1;
+    }
+
+    if (opt_len > 0) {
+      if (read(socket, devicename, opt_len) != opt_len)
+        return -1;
+    }
+
+    switch (ntohl(opt_type)) {
+      case NBD_OPT_EXPORT_NAME:
+        devicename[opt_len] = '\0';
+        return 0;
+
+      case NBD_OPT_ABORT:
+        if (opt_len == 0)
+          nbd_send_reply(socket, opt_type, NBD_REP_ACK, NULL);
+        else
+          nbd_send_reply(socket, opt_type, NBD_REP_ERR_INVALID, NULL);
+        return -1;
+
+      case NBD_OPT_LIST:
+        if (opt_len == 0) {
+          if (nbd_send_devicelist(socket, opt_type)) return -1;
+        } else {
+          if (nbd_send_reply(socket, opt_type, NBD_REP_ERR_INVALID, NULL))
+            return -1;
+        }
+        break;
+
+      default:
+        if (nbd_send_reply(socket, opt_type, NBD_REP_ERR_UNSUP, NULL))
+          return -1;
+        break;
+    }
+  }
+}
+
 void *client_worker (void *arg) {
   struct client_thread_arg *client = (struct client_thread_arg*) arg;
-  char name[128];
+  char devicename[NBD_BUFSIZE];
 
   pthread_setname_np(pthread_self(), "client worker");
-
-  write(client->socket, "BLA\n", 4);
-  read(client->socket, name, 120);
+  nbd_handshake(client->socket, devicename);
 
 ERROR:
   close(client->socket);
@@ -84,7 +214,7 @@ void block_signals ()
   if (sigaction(SIGTERM, &sa, NULL) != 0) err(1, "signal()");
 }
 
-int create_listen_socket (char *ip, char *port)
+int create_listen_socket_inet (char *ip, char *port)
 {
   int listen_socket, reuse, res;
   struct addrinfo hints, *result, *walk;
@@ -97,29 +227,56 @@ int create_listen_socket (char *ip, char *port)
   if ((res = getaddrinfo(ip, port, &hints, &result)) != 0)
     errx(1, "getaddrinfo(): %s", gai_strerror(res));
 
-  for (walk = result; walk != NULL; walk = walk->ai_next) {
+  for (walk = result;;) {
     listen_socket = socket(walk->ai_family, walk->ai_socktype, 0);
-    if (listen_socket < 0) {
-      warn("socket()");
-      continue;
-    }
+    if ((listen_socket >= 0) &&
+        (bind(listen_socket, walk->ai_addr, walk->ai_addrlen) == 0))
+      break;
 
-    if (bind(listen_socket, walk->ai_addr, walk->ai_addrlen) != 0) {
-      warn("bind()");
-      close(listen_socket);
-      continue;
-    }
+    if (walk->ai_next == NULL) err(1, "bind()");
 
-    break;
+    close(listen_socket);
   }
 
-  if (walk == NULL) errx(1, "cannot bind socket");
   freeaddrinfo(result);
 
   reuse = 1;
   res = setsockopt(listen_socket, SOL_SOCKET, SO_REUSEPORT, &reuse,
                    sizeof(reuse));
   if (res != 0) err(1, "setsockopt()");
+
+  return listen_socket;
+}
+
+int create_listen_socket_unix (char *ip)
+{
+  int listen_socket;
+  struct sockaddr_un sun;
+
+  if (strlen(ip) >= sizeof(sun.sun_path))
+    errx(1, "path of unix socket too long");
+
+  listen_socket = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (listen_socket < 0)
+    err(1, "socket()");
+
+  sun.sun_family = AF_UNIX;
+  strncpy(sun.sun_path, ip, sizeof(sun.sun_path));
+
+  if (bind(listen_socket, (struct sockaddr*) &sun, sizeof(sun)) != 0)
+    err(1, "bind()");
+
+  return listen_socket;
+}
+
+int create_listen_socket (char *ip, char *port)
+{
+  int listen_socket;
+
+  if (*ip == '/')
+    listen_socket = create_listen_socket_inet(ip, port);
+  else
+    listen_socket = create_listen_socket_unix(ip);
 
   if (listen(listen_socket, 0) != 0) err(1, "listen()");
 
@@ -134,14 +291,14 @@ int main (int argc, char **argv)
   struct client_thread_arg *thread_arg;
 
   block_signals();
-  listen_socket = create_listen_socket("127.0.0.1", "10809");
+//  listen_socket = create_listen_socket("127.0.0.1", "10809");
+  listen_socket = create_listen_socket("/tmp/s3nbd.sock", "10809");
 
   if (pthread_attr_init(&thread_attr) != 0) err(1, "pthread_attr_init()");
   if (pthread_attr_setdetachstate(&thread_attr, PTHREAD_CREATE_DETACHED) != 0)
     err(1, "pthread_attr_setdetachstate()");
 
-  running = 1;
-  while (running) {
+  for (running = 1; running;) {
     thread_arg = malloc(sizeof(*thread_arg));
     if (thread_arg == NULL) {
       warnx("malloc() failed");
