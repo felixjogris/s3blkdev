@@ -8,6 +8,7 @@
 #include <netdb.h>
 #include <errno.h>
 #include <arpa/inet.h>
+#include <signal.h>
 
 #define __USE_GNU
 #include <pthread.h>
@@ -17,6 +18,8 @@ struct client_thread_arg {
  struct sockaddr addr;
  socklen_t addr_len;
 };
+
+int running;
 
 void set_client_thread_name (struct client_thread_arg *client)
 {
@@ -61,21 +64,38 @@ ERROR:
   return NULL;
 }
 
-int main (int argc, char **argv)
+void sigterm_handler (int sig)
 {
-  int running, error, listen_socket, opt;
+  running = 0;
+}
+
+void block_signals ()
+{
+  sigset_t sigset;
+  struct sigaction sa;
+
+  if (sigfillset(&sigset) != 0) err(1, "sigfillset()");
+  if (sigdelset(&sigset, SIGTERM) != 0) err(1, "sigdelset()");
+  if (pthread_sigmask(SIG_SETMASK, &sigset, NULL) != 0)
+    err(1, "sigprocmask()");
+
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = sigterm_handler;
+  if (sigaction(SIGTERM, &sa, NULL) != 0) err(1, "signal()");
+}
+
+int create_listen_socket (char *ip, char *port)
+{
+  int listen_socket, reuse, res;
   struct addrinfo hints, *result, *walk;
-  pthread_attr_t thread_attr;
-  pthread_t thread;
-  struct client_thread_arg *thread_arg;
 
   memset(&hints, 0, sizeof(hints));
   hints.ai_flags = AI_NUMERICHOST | AI_PASSIVE | AI_NUMERICSERV;
   hints.ai_family = AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
 
-  error = getaddrinfo("127.0.0.1", "10809", &hints, &result);
-  if (error != 0) errx(1, "getaddrinfo(): %s", gai_strerror(error));
+  if ((res = getaddrinfo(ip, port, &hints, &result)) != 0)
+    errx(1, "getaddrinfo(): %s", gai_strerror(res));
 
   for (walk = result; walk != NULL; walk = walk->ai_next) {
     listen_socket = socket(walk->ai_family, walk->ai_socktype, 0);
@@ -96,12 +116,25 @@ int main (int argc, char **argv)
   if (walk == NULL) errx(1, "cannot bind socket");
   freeaddrinfo(result);
 
-  opt = 1;
-  error = setsockopt(listen_socket, SOL_SOCKET, SO_REUSEPORT, &opt,
-                     sizeof(opt));
-  if (error != 0) err(1, "setsockopt()");
+  reuse = 1;
+  res = setsockopt(listen_socket, SOL_SOCKET, SO_REUSEPORT, &reuse,
+                   sizeof(reuse));
+  if (res != 0) err(1, "setsockopt()");
 
   if (listen(listen_socket, 0) != 0) err(1, "listen()");
+
+  return listen_socket;
+}
+
+int main (int argc, char **argv)
+{
+  int listen_socket, res;
+  pthread_attr_t thread_attr;
+  pthread_t thread;
+  struct client_thread_arg *thread_arg;
+
+  block_signals();
+  listen_socket = create_listen_socket("127.0.0.1", "10809");
 
   if (pthread_attr_init(&thread_attr) != 0) err(1, "pthread_attr_init()");
   if (pthread_attr_setdetachstate(&thread_attr, PTHREAD_CREATE_DETACHED) != 0)
@@ -128,8 +161,8 @@ int main (int argc, char **argv)
       continue;
     }
 
-    error = pthread_create(&thread, &thread_attr, &client_worker, thread_arg);
-    if (error != 0) {
+    res = pthread_create(&thread, &thread_attr, &client_worker, thread_arg);
+    if (res != 0) {
       warn("pthread_create()");
       break;
     }
