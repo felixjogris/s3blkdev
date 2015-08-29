@@ -274,9 +274,9 @@ int create_listen_socket (char *ip, char *port)
   int listen_socket;
 
   if (*ip == '/')
-    listen_socket = create_listen_socket_inet(ip, port);
-  else
     listen_socket = create_listen_socket_unix(ip);
+  else
+    listen_socket = create_listen_socket_inet(ip, port);
 
   if (listen(listen_socket, 0) != 0) err(1, "listen()");
 
