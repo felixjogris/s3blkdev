@@ -27,10 +27,19 @@
 #define NBD_FLAG_HAS_FLAGS 1
 #define NBD_FLAG_SEND_FLUSH 4
 #define NBD_FLAG_SEND_FUA 8
-const char const NBD_MAGIC[] = { 'N','B','D','M','A','G','I','C' };
-const char const NBD_IHAVEOPT[] = { 'I','H','A','V','E','O','P','T' };
-const char const NBD_REPLY_MAGIC[] = { 0x00, 0x03, 0xe8, 0x89,
-                                       0x04, 0x55, 0x65, 0xa9 };
+#define NBD_REQUEST_MAGIC 0x25609513
+#define NBD_REPLY_MAGIC 0x67446698
+#define NBD_CMD_READ 0
+#define NBD_CMD_WRITE 1
+#define NBD_CMD_DISC 2
+#define NBD_CMD_FLUSH 3
+#define NBD_CMD_MASK_COMMAND 0x0000ffff
+#define NBD_CMD_FLAG_FUA (1<<16)
+
+const char const NBD_INIT_PASSWD[] = { 'N','B','D','M','A','G','I','C' };
+const char const NBD_OPTS_MAGIC[] = { 'I','H','A','V','E','O','P','T' };
+const char const NBD_OPTS_REPLY_MAGIC[] = { 0x00, 0x03, 0xe8, 0x89,
+                                            0x04, 0x55, 0x65, 0xa9 };
 
 struct client_thread_arg {
   int socket;
@@ -40,10 +49,10 @@ struct client_thread_arg {
 
 struct io_thread_arg {
   pthread_t thread;
-  pthread_cond_t cond;
-  pthread_mutex_t mtx;
+  pthread_cond_t wakeup_cond;
+  pthread_mutex_t wakeup_mtx;
   int socket;
-  pthread_mutex_t *sock_mtx;
+  pthread_mutex_t *socket_mtx;
 };
 
 int running = 1;
@@ -78,6 +87,18 @@ puts(name);
   pthread_setname_np(pthread_self(), name);
 }
 
+uint64_t htonll (uint64_t u64h)
+{
+  uint32_t lo = u64h & 0xffffffffffffffff;
+  uint32_t hi = u64h >> 32;
+  uint64_t u64n = htonl(lo);
+
+  u64n <<= 32;
+  u64n |= htonl(hi);
+
+  return u64n;
+}
+
 int block_signals ()
 {
   sigset_t sigset;
@@ -102,18 +123,18 @@ void *io_worker (void *arg0)
   if (pthread_setname_np(pthread_self(), "I/O worker") != 0)
     goto ERROR;
 
-  if (pthread_mutex_lock(&arg->mtx) != 0)
+  if (pthread_mutex_lock(&arg->wakeup_mtx) != 0)
     goto ERROR;
 
   for (;;) {
-    res = pthread_cond_wait(&arg->cond, &arg->mtx);
+    res = pthread_cond_wait(&arg->wakeup_cond, &arg->wakeup_mtx);
     if (res != 0)
       break;
     if (!running)
       break;
   }
 
-  pthread_mutex_unlock(&arg->mtx);
+  pthread_mutex_unlock(&arg->wakeup_mtx);
 
 ERROR:
   return NULL;
@@ -126,8 +147,8 @@ int nbd_send_reply (int socket, uint32_t opt_type, uint32_t reply_type,
   int len;
   ssize_t written;
 
-  written =  write(socket, NBD_REPLY_MAGIC, sizeof(NBD_REPLY_MAGIC));
-  if (written != sizeof(NBD_REPLY_MAGIC))
+  written =  write(socket, NBD_OPTS_REPLY_MAGIC, sizeof(NBD_OPTS_REPLY_MAGIC));
+  if (written != sizeof(NBD_OPTS_REPLY_MAGIC))
     return -1;
 
   if (write(socket, &opt_type, sizeof(opt_type)) != sizeof(opt_type))
@@ -161,7 +182,7 @@ int nbd_send_reply (int socket, uint32_t opt_type, uint32_t reply_type,
 
 int nbd_send_devicelist (int socket, uint32_t opt_type)
 {
-  char *devlist[]={"brwatzwurt", "klowasser"};
+  char *devlist[]={"not yet implemented", "2 be done", "yo mama's a fine disk"};
   unsigned int i;
 
   for (i = 0; i < sizeof(devlist)/sizeof(devlist[0]); i++) {
@@ -182,13 +203,13 @@ int nbd_send_device_info (int socket, char *devicename, uint32_t flags)
     return -1;
 
   devsize = 100 * 1024 * 1024;
-  devsize = htonl(devsize);
+  devsize = htonll(devsize);
 
   if (write(socket, &devsize, sizeof(devsize)) != sizeof(devsize))
     return -1;
 
   devflags = NBD_FLAG_HAS_FLAGS | NBD_FLAG_SEND_FLUSH | NBD_FLAG_SEND_FUA;
-  devflags = htons(devflags);
+  devflags = htonl(devflags);
 
   if (write(socket, &devflags, sizeof(devflags)) != sizeof(devflags))
     return -1;
@@ -207,11 +228,14 @@ int nbd_handshake (int socket, char *devicename)
   uint32_t flags, opt_type, opt_len;
   char ihaveopt[8];
   uint16_t srv_flags;
+  int written;
 
-  if (write(socket, NBD_MAGIC, sizeof(NBD_MAGIC)) != sizeof(NBD_MAGIC))
+  written = write(socket, NBD_INIT_PASSWD, sizeof(NBD_INIT_PASSWD));
+  if (written != sizeof(NBD_INIT_PASSWD))
     return -1;
 
-  if (write(socket, NBD_IHAVEOPT, sizeof(NBD_IHAVEOPT)) != sizeof(NBD_IHAVEOPT))
+  written = write(socket, NBD_OPTS_MAGIC, sizeof(NBD_OPTS_MAGIC));
+  if (written != sizeof(NBD_OPTS_MAGIC))
     return -1;
 
   srv_flags = NBD_FLAG_FIXED_NEWSTYLE | NBD_FLAG_NO_ZEROES;
@@ -230,7 +254,7 @@ int nbd_handshake (int socket, char *devicename)
     if (read(socket, ihaveopt, sizeof(ihaveopt)) != sizeof(ihaveopt))
       return -1;
 
-    if (memcmp(ihaveopt, NBD_IHAVEOPT, sizeof(NBD_IHAVEOPT)) != 0)
+    if (memcmp(ihaveopt, NBD_OPTS_MAGIC, sizeof(NBD_OPTS_MAGIC)) != 0)
       return -1;
 
     if (read(socket, &opt_type, sizeof(opt_type)) != sizeof(opt_type))
@@ -283,6 +307,8 @@ int nbd_handshake (int socket, char *devicename)
 void *client_worker (void *arg0) {
   struct client_thread_arg *arg = (struct client_thread_arg*) arg0;
   char devicename[NBD_BUFSIZE];
+  pthread_mutex_t socket_mtx;
+  int res;
 
   if (block_signals() != 0)
     goto ERROR;
@@ -292,6 +318,12 @@ void *client_worker (void *arg0) {
 
   if (nbd_handshake(arg->socket, devicename) != 0)
     goto ERROR;
+
+  if ((res = pthread_mutex_init(&socket_mtx, NULL)) != 0)
+    goto ERROR;
+
+printf("client wants =%s=\n", devicename);
+  pthread_mutex_destroy(&socket_mtx);
 
 ERROR:
   close(arg->socket);
@@ -309,14 +341,19 @@ void setup_signals ()
   sigset_t sigset;
   struct sigaction sa;
 
-  if (sigfillset(&sigset) != 0) err(1, "sigfillset()");
-  if (sigdelset(&sigset, SIGTERM) != 0) err(1, "sigdelset()");
+  if (sigfillset(&sigset) != 0)
+    err(1, "sigfillset()");
+
+  if (sigdelset(&sigset, SIGTERM) != 0)
+    err(1, "sigdelset()");
+
   if (pthread_sigmask(SIG_SETMASK, &sigset, NULL) != 0)
     err(1, "sigprocmask()");
 
   memset(&sa, 0, sizeof(sa));
   sa.sa_handler = sigterm_handler;
-  if (sigaction(SIGTERM, &sa, NULL) != 0) err(1, "signal()");
+  if (sigaction(SIGTERM, &sa, NULL) != 0)
+    err(1, "signal()");
 }
 
 int create_listen_socket_inet (char *ip, char *port)
@@ -338,7 +375,8 @@ int create_listen_socket_inet (char *ip, char *port)
         (bind(listen_socket, walk->ai_addr, walk->ai_addrlen) == 0))
       break;
 
-    if (walk->ai_next == NULL) err(1, "bind()");
+    if (walk->ai_next == NULL)
+      err(1, "bind()");
 
     close(listen_socket);
   }
@@ -348,7 +386,8 @@ int create_listen_socket_inet (char *ip, char *port)
   reuse = 1;
   res = setsockopt(listen_socket, SOL_SOCKET, SO_REUSEPORT, &reuse,
                    sizeof(reuse));
-  if (res != 0) err(1, "setsockopt()");
+  if (res != 0)
+    err(1, "setsockopt()");
 
   return listen_socket;
 }
@@ -383,7 +422,8 @@ int create_listen_socket (char *ip, char *port)
   else
     listen_socket = create_listen_socket_inet(ip, port);
 
-  if (listen(listen_socket, 0) != 0) err(1, "listen()");
+  if (listen(listen_socket, 0) != 0)
+    err(1, "listen()");
 
   return listen_socket;
 }
@@ -419,10 +459,10 @@ void launch_io_workers ()
     errx(1, "malloc() failed");
 
   for (i = 0; i < num_io_threads; i++) {
-    if ((res = pthread_cond_init(&io_threads[i].cond, NULL)) != 0)
+    if ((res = pthread_cond_init(&io_threads[i].wakeup_cond, NULL)) != 0)
       errx(1, "pthread_cond_init(): %s", strerror(res));
 
-    if ((res = pthread_mutex_init(&io_threads[i].mtx, NULL)) != 0)
+    if ((res = pthread_mutex_init(&io_threads[i].wakeup_mtx, NULL)) != 0)
       errx(1, "pthread_mutex_init(): %s", strerror(res));
 
     res = pthread_create(&io_threads[i].thread, NULL, &io_worker,
@@ -437,17 +477,17 @@ void join_io_workers ()
   int i, res;
 
   for (i = 0; i < num_io_threads; i++) {
-    if ((res = pthread_mutex_lock(&io_threads[i].mtx)) != 0)
+    if ((res = pthread_mutex_lock(&io_threads[i].wakeup_mtx)) != 0)
       warnx("pthread_mutex_lock(): %s", strerror(res));
-    else if ((res = pthread_cond_signal(&io_threads[i].cond)) != 0)
+    else if ((res = pthread_cond_signal(&io_threads[i].wakeup_cond)) != 0)
       warnx("pthread_cond_signal(): %s", strerror(res));
-    else if ((res = pthread_mutex_unlock(&io_threads[i].mtx)) != 0)
+    else if ((res = pthread_mutex_unlock(&io_threads[i].wakeup_mtx)) != 0)
       warnx("pthread_mutex_unlock(): %s", strerror(res));
     else if ((res = pthread_join(io_threads[i].thread, NULL)) != 0)
       warnx("pthread_join(): %s", strerror(res));
-    else if ((res = pthread_mutex_destroy(&io_threads[i].mtx)) != 0)
+    else if ((res = pthread_mutex_destroy(&io_threads[i].wakeup_mtx)) != 0)
       warnx("pthread_mutex_destroy(): %s", strerror(res));
-    else if ((res = pthread_cond_destroy(&io_threads[i].cond)) != 0)
+    else if ((res = pthread_cond_destroy(&io_threads[i].wakeup_cond)) != 0)
       warnx("pthread_cond_destroy(): %s", strerror(res));
   }
 
