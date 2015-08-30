@@ -46,6 +46,7 @@ struct client_thread_arg {
   int socket;
   struct sockaddr addr;
   socklen_t addr_len;
+  pthread_mutex_t socket_mtx;
 };
 
 struct io_thread_arg {
@@ -314,13 +315,81 @@ int nbd_handshake (int socket, char *devicename)
   }
 }
 
+struct io_thread_arg *find_free_io_worker ()
+{
+  int i = 0;
+
+  for (;;) {
+    switch (pthread_mutex_trylock(&io_threads[i].wakeup_mtx)) {
+      case 0:
+        return &io_threads[i];
+      case EBUSY:
+        break;
+      default:
+        return NULL;
+    }
+
+    if (i++ >= num_io_threads)
+      i = 0;
+  }
+}
+
+int client_worker_loop (struct client_thread_arg *arg)
+{
+  fd_set rfds;
+  struct timeval timeout;
+  struct io_thread_arg *slot;
+  int res, result = -1;
+
+  FD_ZERO(&rfds);
+  FD_SET(arg->socket, &rfds);
+
+  timeout.tv_sec = 1;
+  timeout.tv_usec = 0;
+
+  res = select(arg->socket + 1, &rfds, NULL, NULL, &timeout);
+  if (res == 0)
+    return 0;
+  if (!running || (res < 0))
+    goto ERROR;
+
+  slot = find_free_io_worker();
+  if (slot == NULL)
+    goto ERROR;
+
+  if (read(arg->socket, &slot->req, sizeof(slot->req)) != sizeof(slot->req))
+    goto ERROR1;
+
+  slot->req.len = ntohl(slot->req.len);
+  if (slot->req.len > slot->buflen) {
+    slot->buflen = slot->req.len;
+    slot->buffer = realloc(slot->buffer, slot->buflen);
+    if (slot->buffer == NULL)
+      goto ERROR1;
+  }
+
+  if (read(arg->socket, slot->buffer, slot->req.len) != slot->req.len)
+    goto ERROR1;
+
+  slot->socket = arg->socket;
+  slot->socket_mtx = &arg->socket_mtx;
+
+  if (pthread_cond_signal(&slot->wakeup_cond) != 0)
+    goto ERROR1;
+
+  result = 0;
+
+ERROR1:
+  if (pthread_mutex_unlock(&slot->wakeup_mtx) != 0)
+    result = -1;
+
+ERROR:
+  return result;
+}
+
 void *client_worker (void *arg0) {
   struct client_thread_arg *arg = (struct client_thread_arg*) arg0;
   char devicename[NBD_BUFSIZE];
-  pthread_mutex_t socket_mtx;
-  int res;
-  fd_set rfds;
-  struct timeval timeout;
 
   if (block_signals() != 0)
     goto ERROR;
@@ -331,31 +400,15 @@ void *client_worker (void *arg0) {
   if (nbd_handshake(arg->socket, devicename) != 0)
     goto ERROR;
 
-  if ((res = pthread_mutex_init(&socket_mtx, NULL)) != 0)
+  if (pthread_mutex_init(&arg->socket_mtx, NULL) != 0)
     goto ERROR;
 
 printf("client wants =%s=\n", devicename);
 
-  for (;;) {
-    FD_ZERO(&rfds);
-    FD_SET(arg->socket, &rfds);
+  while (client_worker_loop(arg) == 0)
+    ;;
 
-    timeout.tv_sec = 1;
-    timeout.tv_usec = 0;
-
-    res = select(arg->socket + 1, &rfds, NULL, NULL, &timeout);
-    if (!running)
-      break;
-    if (res > 0) { /* no-op */ }
-    else if ((res == 0) || (errno == EINTR))
-      continue;
-    else
-      break;
-
-//    if (read(arg->socket, &
-  }
-
-  pthread_mutex_destroy(&socket_mtx);
+  pthread_mutex_destroy(&arg->socket_mtx);
 
 ERROR:
   close(arg->socket);
