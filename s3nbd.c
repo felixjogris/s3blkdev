@@ -10,6 +10,7 @@
 #include <arpa/inet.h>
 #include <signal.h>
 #include <sys/un.h>
+#include <sys/select.h>
 
 #define __USE_GNU
 #include <pthread.h>
@@ -37,7 +38,7 @@
 #define NBD_CMD_FLAG_FUA (1<<16)
 
 const char const NBD_INIT_PASSWD[] = { 'N','B','D','M','A','G','I','C' };
-const char const NBD_OPTS_MAGIC[] = { 'I','H','A','V','E','O','P','T' };
+const char const NBD_OPTS_MAGIC[] =  { 'I','H','A','V','E','O','P','T' };
 const char const NBD_OPTS_REPLY_MAGIC[] = { 0x00, 0x03, 0xe8, 0x89,
                                             0x04, 0x55, 0x65, 0xa9 };
 
@@ -53,11 +54,20 @@ struct io_thread_arg {
   pthread_mutex_t wakeup_mtx;
   int socket;
   pthread_mutex_t *socket_mtx;
+  struct {
+    uint32_t magic;
+    uint32_t type;
+    char handle[8];
+    uint64_t offs;
+    uint32_t len;
+  } req __attribute__((packed));
+  size_t buflen;
+  void *buffer;
 };
 
 int running = 1;
 int num_io_threads = 16;
-struct io_thread_arg *io_threads;
+struct io_thread_arg io_threads[128];
 
 void set_client_thread_name (struct client_thread_arg *client)
 {
@@ -128,9 +138,9 @@ void *io_worker (void *arg0)
 
   for (;;) {
     res = pthread_cond_wait(&arg->wakeup_cond, &arg->wakeup_mtx);
-    if (res != 0)
-      break;
     if (!running)
+      break;
+    if (res != 0)
       break;
   }
 
@@ -309,6 +319,8 @@ void *client_worker (void *arg0) {
   char devicename[NBD_BUFSIZE];
   pthread_mutex_t socket_mtx;
   int res;
+  fd_set rfds;
+  struct timeval timeout;
 
   if (block_signals() != 0)
     goto ERROR;
@@ -323,6 +335,26 @@ void *client_worker (void *arg0) {
     goto ERROR;
 
 printf("client wants =%s=\n", devicename);
+
+  for (;;) {
+    FD_ZERO(&rfds);
+    FD_SET(arg->socket, &rfds);
+
+    timeout.tv_sec = 1;
+    timeout.tv_usec = 0;
+
+    res = select(arg->socket + 1, &rfds, NULL, NULL, &timeout);
+    if (!running)
+      break;
+    if (res > 0) { /* no-op */ }
+    else if ((res == 0) || (errno == EINTR))
+      continue;
+    else
+      break;
+
+//    if (read(arg->socket, &
+  }
+
   pthread_mutex_destroy(&socket_mtx);
 
 ERROR:
@@ -454,11 +486,12 @@ void launch_io_workers ()
 {
   int i, res;
 
-  io_threads = malloc(num_io_threads * sizeof(struct io_thread_arg));
-  if (io_threads == NULL)
-    errx(1, "malloc() failed");
-
   for (i = 0; i < num_io_threads; i++) {
+    io_threads[i].buflen = 1024 * 1024;
+    io_threads[i].buffer = malloc(io_threads[i].buflen);
+    if (io_threads[i].buffer == NULL)
+      errx(1, "malloc() failed");
+
     if ((res = pthread_cond_init(&io_threads[i].wakeup_cond, NULL)) != 0)
       errx(1, "pthread_cond_init(): %s", strerror(res));
 
@@ -479,19 +512,18 @@ void join_io_workers ()
   for (i = 0; i < num_io_threads; i++) {
     if ((res = pthread_mutex_lock(&io_threads[i].wakeup_mtx)) != 0)
       warnx("pthread_mutex_lock(): %s", strerror(res));
-    else if ((res = pthread_cond_signal(&io_threads[i].wakeup_cond)) != 0)
+    if ((res = pthread_cond_signal(&io_threads[i].wakeup_cond)) != 0)
       warnx("pthread_cond_signal(): %s", strerror(res));
-    else if ((res = pthread_mutex_unlock(&io_threads[i].wakeup_mtx)) != 0)
+    if ((res = pthread_mutex_unlock(&io_threads[i].wakeup_mtx)) != 0)
       warnx("pthread_mutex_unlock(): %s", strerror(res));
-    else if ((res = pthread_join(io_threads[i].thread, NULL)) != 0)
+    if ((res = pthread_join(io_threads[i].thread, NULL)) != 0)
       warnx("pthread_join(): %s", strerror(res));
-    else if ((res = pthread_mutex_destroy(&io_threads[i].wakeup_mtx)) != 0)
+    if ((res = pthread_mutex_destroy(&io_threads[i].wakeup_mtx)) != 0)
       warnx("pthread_mutex_destroy(): %s", strerror(res));
-    else if ((res = pthread_cond_destroy(&io_threads[i].wakeup_cond)) != 0)
+    if ((res = pthread_cond_destroy(&io_threads[i].wakeup_cond)) != 0)
       warnx("pthread_cond_destroy(): %s", strerror(res));
+    free(io_threads[i].buffer);
   }
-
-  free(io_threads);
 }
 
 int main (int argc, char **argv)
