@@ -252,7 +252,7 @@ int nbd_send_devicelist (int socket, uint32_t opt_type)
 int nbd_send_device_info (int socket, char *devicename, uint32_t flags)
 {
   uint64_t devsize;
-  uint32_t devflags;
+  uint16_t devflags;
   char padding[124];
 
   if (strcmp(devicename, "tehdisk"))
@@ -265,7 +265,7 @@ int nbd_send_device_info (int socket, char *devicename, uint32_t flags)
     return -1;
 
   devflags = NBD_FLAG_HAS_FLAGS | NBD_FLAG_SEND_FLUSH | NBD_FLAG_SEND_FUA;
-  devflags = htonl(devflags);
+  devflags = htons(devflags);
 
   if (write(socket, &devflags, sizeof(devflags)) != sizeof(devflags))
     return -1;
@@ -385,6 +385,7 @@ int client_worker_loop (struct client_thread_arg *arg)
   struct timeval timeout;
   struct io_thread_arg *slot;
   int res, result = -1;
+  uint32_t cmd;
 
   FD_ZERO(&rfds);
   FD_SET(arg->socket, &rfds);
@@ -413,7 +414,10 @@ int client_worker_loop (struct client_thread_arg *arg)
       goto ERROR1;
   }
 
-  if ((slot->req.len > 0) &&
+  slot->req.type = ntohl(slot->req.type);
+  cmd = slot->req.type & NBD_CMD_MASK_COMMAND;
+  if (((cmd & NBD_CMD_WRITE) == NBD_CMD_WRITE) &&
+      (slot->req.len > 0) &&
       (read(arg->socket, slot->buffer, slot->req.len) != slot->req.len))
     goto ERROR1;
 
