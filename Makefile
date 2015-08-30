@@ -5,6 +5,9 @@ LIBS=-lpthread
 s3nbd:	s3nbd.c
 	$(CC) $(CFLAGS) $(LDFLAGS) $(LIBS) -o $@ $<
 
-clean:	; -rm s3nbd
+test:	test.c
+	$(CC) $(CFLAGS) $(LDFLAGS) $(LIBS) -o $@ $<
+
+clean:	; -rm s3nbd test
 
 .PHONY:	clean

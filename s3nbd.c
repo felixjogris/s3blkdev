@@ -14,11 +14,9 @@
 #define __USE_GNU
 #include <pthread.h>
 
-const char const NBD_SERVER_HELLO[] = { 'N','B','D','M','A','G','I','C',
-                                        'I','H','A','V','E','O','P','T',
-                                         0, 1 };
-const char const NBD_REPLY_MAGIC[] = { 0x00, 0x03, 0xe8, 0x89,
-                                       0x04, 0x55, 0x65, 0xa9 };
+#define NBD_BUFSIZE 1024
+#define NBD_FLAG_FIXED_NEWSTYLE 1
+#define NBD_FLAG_NO_ZEROES 2
 #define NBD_OPT_EXPORT_NAME 1
 #define NBD_OPT_ABORT 2
 #define NBD_OPT_LIST 3
@@ -26,15 +24,31 @@ const char const NBD_REPLY_MAGIC[] = { 0x00, 0x03, 0xe8, 0x89,
 #define NBD_REP_SERVER 2
 #define NBD_REP_ERR_UNSUP 0x80000001
 #define NBD_REP_ERR_INVALID 0x80000003
-#define NBD_BUFSIZE 1024
+#define NBD_FLAG_HAS_FLAGS 1
+#define NBD_FLAG_SEND_FLUSH 4
+#define NBD_FLAG_SEND_FUA 8
+const char const NBD_MAGIC[] = { 'N','B','D','M','A','G','I','C' };
+const char const NBD_IHAVEOPT[] = { 'I','H','A','V','E','O','P','T' };
+const char const NBD_REPLY_MAGIC[] = { 0x00, 0x03, 0xe8, 0x89,
+                                       0x04, 0x55, 0x65, 0xa9 };
 
 struct client_thread_arg {
- int socket;
- struct sockaddr addr;
- socklen_t addr_len;
+  int socket;
+  struct sockaddr addr;
+  socklen_t addr_len;
 };
 
-int running;
+struct io_thread_arg {
+  pthread_t thread;
+  pthread_cond_t cond;
+  pthread_mutex_t mtx;
+  int socket;
+  pthread_mutex_t *sock_mtx;
+};
+
+int running = 1;
+int num_io_threads = 16;
+struct io_thread_arg *io_threads;
 
 void set_client_thread_name (struct client_thread_arg *client)
 {
@@ -64,13 +78,56 @@ puts(name);
   pthread_setname_np(pthread_self(), name);
 }
 
+int block_signals ()
+{
+  sigset_t sigset;
+
+  if (sigfillset(&sigset) != 0)
+    return -1;
+
+  if (pthread_sigmask(SIG_SETMASK, &sigset, NULL) != 0)
+    return -1;
+
+  return 0;
+}
+
+void *io_worker (void *arg0)
+{
+  struct io_thread_arg *arg = (struct io_thread_arg*) arg0;
+  int res;
+
+  if (block_signals() != 0)
+    goto ERROR;
+
+  if (pthread_setname_np(pthread_self(), "I/O worker") != 0)
+    goto ERROR;
+
+  if (pthread_mutex_lock(&arg->mtx) != 0)
+    goto ERROR;
+
+  for (;;) {
+    res = pthread_cond_wait(&arg->cond, &arg->mtx);
+    if (res != 0)
+      break;
+    if (!running)
+      break;
+  }
+
+  pthread_mutex_unlock(&arg->mtx);
+
+ERROR:
+  return NULL;
+}
+
 int nbd_send_reply (int socket, uint32_t opt_type, uint32_t reply_type,
                     char *reply_data)
 {
   uint32_t reply_len;
   int len;
+  ssize_t written;
 
-  if (write(socket, NBD_REPLY_MAGIC, sizeof(NBD_REPLY_MAGIC)) != sizeof(NBD_REPLY_MAGIC))
+  written =  write(socket, NBD_REPLY_MAGIC, sizeof(NBD_REPLY_MAGIC));
+  if (written != sizeof(NBD_REPLY_MAGIC))
     return -1;
 
   if (write(socket, &opt_type, sizeof(opt_type)) != sizeof(opt_type))
@@ -87,6 +144,7 @@ int nbd_send_reply (int socket, uint32_t opt_type, uint32_t reply_type,
   } else {
     len = strlen(reply_data);
     reply_len = htonl(len + sizeof(reply_len));
+
     if (write(socket, &reply_len, sizeof(reply_len)) != sizeof(reply_len))
       return -1;
 
@@ -114,25 +172,65 @@ int nbd_send_devicelist (int socket, uint32_t opt_type)
   return nbd_send_reply(socket, opt_type, NBD_REP_ACK, NULL);
 }
 
+int nbd_send_device_info (int socket, char *devicename, uint32_t flags)
+{
+  uint64_t devsize;
+  uint32_t devflags;
+  char padding[124];
+
+  if (strcmp(devicename, "tehdisk"))
+    return -1;
+
+  devsize = 100 * 1024 * 1024;
+  devsize = htonl(devsize);
+
+  if (write(socket, &devsize, sizeof(devsize)) != sizeof(devsize))
+    return -1;
+
+  devflags = NBD_FLAG_HAS_FLAGS | NBD_FLAG_SEND_FLUSH | NBD_FLAG_SEND_FUA;
+  devflags = htons(devflags);
+
+  if (write(socket, &devflags, sizeof(devflags)) != sizeof(devflags))
+    return -1;
+
+  if ((flags & NBD_FLAG_NO_ZEROES) != NBD_FLAG_NO_ZEROES) {
+    memset(padding, 0, sizeof(padding));
+    if (write(socket, padding, sizeof(padding)) != sizeof(padding))
+      return -1;
+  }
+
+  return 0;
+}
+
 int nbd_handshake (int socket, char *devicename)
 {
   uint32_t flags, opt_type, opt_len;
   char ihaveopt[8];
+  uint16_t srv_flags;
 
-  if (write(socket, NBD_SERVER_HELLO, sizeof(NBD_SERVER_HELLO)) != sizeof(NBD_SERVER_HELLO))
+  if (write(socket, NBD_MAGIC, sizeof(NBD_MAGIC)) != sizeof(NBD_MAGIC))
+    return -1;
+
+  if (write(socket, NBD_IHAVEOPT, sizeof(NBD_IHAVEOPT)) != sizeof(NBD_IHAVEOPT))
+    return -1;
+
+  srv_flags = NBD_FLAG_FIXED_NEWSTYLE | NBD_FLAG_NO_ZEROES;
+  srv_flags = htons(srv_flags);
+  if (write(socket, &srv_flags, sizeof(srv_flags)) != sizeof(srv_flags))
     return -1;
 
   if (read(socket, &flags, sizeof(flags)) != sizeof(flags))
     return -1;
 
-  if (ntohl(flags) != 1)
+  flags = ntohl(flags);
+  if ((flags & NBD_FLAG_FIXED_NEWSTYLE) != NBD_FLAG_FIXED_NEWSTYLE)
     return -1;
 
   for (;;) {
     if (read(socket, ihaveopt, sizeof(ihaveopt)) != sizeof(ihaveopt))
       return -1;
 
-    if (memcmp(ihaveopt, "IHAVEOPT", 8) != 0)
+    if (memcmp(ihaveopt, NBD_IHAVEOPT, sizeof(NBD_IHAVEOPT)) != 0)
       return -1;
 
     if (read(socket, &opt_type, sizeof(opt_type)) != sizeof(opt_type))
@@ -155,7 +253,7 @@ int nbd_handshake (int socket, char *devicename)
     switch (ntohl(opt_type)) {
       case NBD_OPT_EXPORT_NAME:
         devicename[opt_len] = '\0';
-        return 0;
+        return nbd_send_device_info(socket, devicename, flags);
 
       case NBD_OPT_ABORT:
         if (opt_len == 0)
@@ -166,31 +264,38 @@ int nbd_handshake (int socket, char *devicename)
 
       case NBD_OPT_LIST:
         if (opt_len == 0) {
-          if (nbd_send_devicelist(socket, opt_type)) return -1;
+          if (nbd_send_devicelist(socket, opt_type) != 0)
+            return -1;
         } else {
-          if (nbd_send_reply(socket, opt_type, NBD_REP_ERR_INVALID, NULL))
+          if (nbd_send_reply(socket, opt_type, NBD_REP_ERR_INVALID, NULL) != 0)
             return -1;
         }
         break;
 
       default:
-        if (nbd_send_reply(socket, opt_type, NBD_REP_ERR_UNSUP, NULL))
+        if (nbd_send_reply(socket, opt_type, NBD_REP_ERR_UNSUP, NULL) != 0)
           return -1;
         break;
     }
   }
 }
 
-void *client_worker (void *arg) {
-  struct client_thread_arg *client = (struct client_thread_arg*) arg;
+void *client_worker (void *arg0) {
+  struct client_thread_arg *arg = (struct client_thread_arg*) arg0;
   char devicename[NBD_BUFSIZE];
 
-  pthread_setname_np(pthread_self(), "client worker");
-  nbd_handshake(client->socket, devicename);
+  if (block_signals() != 0)
+    goto ERROR;
+
+  if (pthread_setname_np(pthread_self(), "Client worker") != 0)
+    goto ERROR;
+
+  if (nbd_handshake(arg->socket, devicename) != 0)
+    goto ERROR;
 
 ERROR:
-  close(client->socket);
-  free(arg);
+  close(arg->socket);
+  free(arg0);
   return NULL;
 }
 
@@ -199,7 +304,7 @@ void sigterm_handler (int sig)
   running = 0;
 }
 
-void block_signals ()
+void setup_signals ()
 {
   sigset_t sigset;
   struct sigaction sa;
@@ -305,6 +410,50 @@ void show_help ()
 );
 }
 
+void launch_io_workers ()
+{
+  int i, res;
+
+  io_threads = malloc(num_io_threads * sizeof(struct io_thread_arg));
+  if (io_threads == NULL)
+    errx(1, "malloc() failed");
+
+  for (i = 0; i < num_io_threads; i++) {
+    if ((res = pthread_cond_init(&io_threads[i].cond, NULL)) != 0)
+      errx(1, "pthread_cond_init(): %s", strerror(res));
+
+    if ((res = pthread_mutex_init(&io_threads[i].mtx, NULL)) != 0)
+      errx(1, "pthread_mutex_init(): %s", strerror(res));
+
+    res = pthread_create(&io_threads[i].thread, NULL, &io_worker,
+                         &io_threads[i]);
+    if (res != 0)
+      errx(1, "pthread_create(): %s", strerror(res));
+  }
+}
+
+void join_io_workers ()
+{
+  int i, res;
+
+  for (i = 0; i < num_io_threads; i++) {
+    if ((res = pthread_mutex_lock(&io_threads[i].mtx)) != 0)
+      warnx("pthread_mutex_lock(): %s", strerror(res));
+    else if ((res = pthread_cond_signal(&io_threads[i].cond)) != 0)
+      warnx("pthread_cond_signal(): %s", strerror(res));
+    else if ((res = pthread_mutex_unlock(&io_threads[i].mtx)) != 0)
+      warnx("pthread_mutex_unlock(): %s", strerror(res));
+    else if ((res = pthread_join(io_threads[i].thread, NULL)) != 0)
+      warnx("pthread_join(): %s", strerror(res));
+    else if ((res = pthread_mutex_destroy(&io_threads[i].mtx)) != 0)
+      warnx("pthread_mutex_destroy(): %s", strerror(res));
+    else if ((res = pthread_cond_destroy(&io_threads[i].cond)) != 0)
+      warnx("pthread_cond_destroy(): %s", strerror(res));
+  }
+
+  free(io_threads);
+}
+
 int main (int argc, char **argv)
 {
   char *ip = "0.0.0.0", *port = "10809", *configdir = "/etc/s3nbd";
@@ -324,15 +473,17 @@ int main (int argc, char **argv)
     }
   }
 
-  block_signals();
-//  listen_socket = create_listen_socket("127.0.0.1", "10809");
-  listen_socket = create_listen_socket("/tmp/s3nbd.sock", "10809");
+  setup_signals();
+  listen_socket = create_listen_socket(ip, port);
+  launch_io_workers();
 
-  if (pthread_attr_init(&thread_attr) != 0) err(1, "pthread_attr_init()");
-  if (pthread_attr_setdetachstate(&thread_attr, PTHREAD_CREATE_DETACHED) != 0)
-    err(1, "pthread_attr_setdetachstate()");
+  if ((res = pthread_attr_init(&thread_attr)) != 0)
+    errx(1, "pthread_attr_init(): %s", strerror(res));
+  res = pthread_attr_setdetachstate(&thread_attr, PTHREAD_CREATE_DETACHED);
+  if (res != 0)
+    errx(1, "pthread_attr_setdetachstate(): %s", strerror(res));
 
-  for (running = 1; running;) {
+  while (running) {
     thread_arg = malloc(sizeof(*thread_arg));
     if (thread_arg == NULL) {
       warnx("malloc() failed");
@@ -354,10 +505,13 @@ int main (int argc, char **argv)
 
     res = pthread_create(&thread, &thread_attr, &client_worker, thread_arg);
     if (res != 0) {
-      warn("pthread_create()");
+      warnx("pthread_create(): %s", strerror(res));
       break;
     }
   }
+
+  running = 0;
+  join_io_workers();
 
   return 0;
 }
