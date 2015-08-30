@@ -55,13 +55,13 @@ struct io_thread_arg {
   pthread_mutex_t wakeup_mtx;
   int socket;
   pthread_mutex_t *socket_mtx;
-  struct {
+  struct __attribute__((packed)) {
     uint32_t magic;
     uint32_t type;
     char handle[8];
     uint64_t offs;
     uint32_t len;
-  } req __attribute__((packed));
+  } req;
   size_t buflen;
   void *buffer;
 };
@@ -177,9 +177,17 @@ void *io_worker (void *arg0)
       continue;
     }
 
-if (io_send_reply(arg, EIO, 0) != 0) break;
     type = ntohl(arg->req.type);
     offs = ntohll(arg->req.offs);
+
+    switch (type & NBD_CMD_MASK_COMMAND) {
+      case NBD_CMD_READ:
+        memset(arg->buffer, 0, arg->req.len);
+        io_send_reply(arg, 0, arg->req.len);
+        break;
+default:
+io_send_reply(arg, EIO, 0);break;
+    }
   }
 
   pthread_mutex_unlock(&arg->wakeup_mtx);
@@ -405,7 +413,8 @@ int client_worker_loop (struct client_thread_arg *arg)
       goto ERROR1;
   }
 
-  if (read(arg->socket, slot->buffer, slot->req.len) != slot->req.len)
+  if ((slot->req.len > 0) &&
+      (read(arg->socket, slot->buffer, slot->req.len) != slot->req.len))
     goto ERROR1;
 
   slot->socket = arg->socket;
