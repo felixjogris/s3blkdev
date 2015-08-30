@@ -70,6 +70,7 @@ int running = 1;
 int num_io_threads = 16;
 struct io_thread_arg io_threads[128];
 
+#if 0
 void set_client_thread_name (struct client_thread_arg *client)
 {
   char name[16], addr[INET6_ADDRSTRLEN];
@@ -97,6 +98,7 @@ void set_client_thread_name (struct client_thread_arg *client)
 puts(name);
   pthread_setname_np(pthread_self(), name);
 }
+#endif
 
 uint64_t htonll (uint64_t u64h)
 {
@@ -108,6 +110,11 @@ uint64_t htonll (uint64_t u64h)
   u64n |= htonl(hi);
 
   return u64n;
+}
+
+uint64_t ntohll (uint64_t u64n)
+{
+  return htonll(u64n);
 }
 
 int block_signals ()
@@ -123,10 +130,31 @@ int block_signals ()
   return 0;
 }
 
+int io_send_reply (struct io_thread_arg *arg, uint32_t error, uint32_t len)
+{
+  const int hdrlen = sizeof(arg->req.magic) + sizeof(arg->req.type) +
+                     sizeof(arg->req.handle);
+
+  arg->req.magic = htonl(NBD_REPLY_MAGIC);
+  arg->req.type = htonl(error);
+
+  if (pthread_mutex_lock(arg->socket_mtx) != 0)
+    return -1;
+
+  if ((write(arg->socket, &arg->req, hdrlen) == hdrlen) && (len > 0))
+    write(arg->socket, arg->buffer, len);
+
+  if (pthread_mutex_unlock(arg->socket_mtx) != 0)
+    return -1;
+
+  return 0;
+}
+
 void *io_worker (void *arg0)
 {
   struct io_thread_arg *arg = (struct io_thread_arg*) arg0;
-  int res;
+  uint32_t type;
+  uint64_t offs;
 
   if (block_signals() != 0)
     goto ERROR;
@@ -138,11 +166,20 @@ void *io_worker (void *arg0)
     goto ERROR;
 
   for (;;) {
-    res = pthread_cond_wait(&arg->wakeup_cond, &arg->wakeup_mtx);
+    if (pthread_cond_wait(&arg->wakeup_cond, &arg->wakeup_mtx) != 0)
+      break;
     if (!running)
       break;
-    if (res != 0)
-      break;
+
+    if (ntohl(arg->req.magic) != NBD_REQUEST_MAGIC) {
+      if (io_send_reply(arg, EINVAL, 0) != 0)
+        break;
+      continue;
+    }
+
+if (io_send_reply(arg, EIO, 0) != 0) break;
+    type = ntohl(arg->req.type);
+    offs = ntohll(arg->req.offs);
   }
 
   pthread_mutex_unlock(&arg->wakeup_mtx);
@@ -443,7 +480,7 @@ void setup_signals ()
 
 int create_listen_socket_inet (char *ip, char *port)
 {
-  int listen_socket, reuse, res;
+  int listen_socket, yes, res;
   struct addrinfo hints, *result, *walk;
 
   memset(&hints, 0, sizeof(hints));
@@ -468,9 +505,13 @@ int create_listen_socket_inet (char *ip, char *port)
 
   freeaddrinfo(result);
 
-  reuse = 1;
-  res = setsockopt(listen_socket, SOL_SOCKET, SO_REUSEPORT, &reuse,
-                   sizeof(reuse));
+  yes = 1;
+  res = setsockopt(listen_socket, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
+  if (res != 0)
+    err(1, "setsockopt()");
+
+  yes = 1;
+  res = setsockopt(listen_socket, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
   if (res != 0)
     err(1, "setsockopt()");
 
