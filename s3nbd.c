@@ -85,8 +85,9 @@ ssize_t read_all (int fd, void *buffer, size_t len)
   ssize_t res;
 
   for (; len > 0; buffer += res, len -= res) {
-    if ((res = read(fd, buffer, len)) < 0) {
-      logerr("read(): %s", strerror(errno));
+    if ((res = read(fd, buffer, len)) <= 0) {
+      if (res < 0)
+        logerr("read(): %s", strerror(errno));
       return -1;
     }
   }
@@ -669,10 +670,12 @@ int client_worker_loop (struct client_thread_arg *arg)
   res = select(arg->socket + 1, &rfds, NULL, NULL, &timeout);
   if (res == 0)
     return 0;
+
   if (res < 0) {
     logerr("select(): %s", strerror(errno));
     goto ERROR;
   }
+
   if (!running)
     goto ERROR;
 
@@ -687,6 +690,7 @@ int client_worker_loop (struct client_thread_arg *arg)
   if (slot->req.len > slot->buflen) {
     slot->buflen = slot->req.len;
     slot->buffer = realloc(slot->buffer, slot->buflen);
+
     if (slot->buffer == NULL) {
       logerr("%s", "realloc() failed");
       goto ERROR1;
@@ -697,6 +701,9 @@ int client_worker_loop (struct client_thread_arg *arg)
   if (((slot->req.type & NBD_CMD_WRITE) == NBD_CMD_WRITE) &&
       (slot->req.len > 0) &&
       (read_all(arg->socket, slot->buffer, slot->req.len) != 0))
+    goto ERROR1;
+
+  if ((slot->req.type & NBD_CMD_DISC) == NBD_CMD_DISC)
     goto ERROR1;
 
   slot->socket = arg->socket;
@@ -944,12 +951,10 @@ void join_io_workers ()
 
 int main (int argc, char **argv)
 {
-#define log_error_break(fmt, params ...) { \
+#define log_error(fmt, params ...) do { \
   if (foreground) warnx(fmt "\n", ## params); \
   else syslog(LOG_WARNING, fmt "\n", ## params); \
-  } \
-  running = 0; \
-  break
+} while (0)
 
   char *ip = "0.0.0.0", *port = "10809", *configdir = "/etc/s3nbd";
   int foreground = 0, listen_socket, res;
@@ -983,25 +988,33 @@ int main (int argc, char **argv)
 
   while (running) {
     thread_arg = malloc(sizeof(*thread_arg));
-    if (thread_arg == NULL)
-      log_error_break("%s", "malloc() failed");
+    if (thread_arg == NULL) {
+      log_error("%s", "malloc() failed");
+      break;
+    }
 
     thread_arg->addr_len = sizeof(thread_arg->addr);
     thread_arg->socket = accept(listen_socket, &thread_arg->addr,
                                 &thread_arg->addr_len);
 
     if (thread_arg->socket < 0) {
-      if (errno != EINTR)
-        log_error_break("accept(): %s", strerror(errno));
+      if (errno != EINTR) {
+        log_error("accept(): %s", strerror(errno));
+        break;
+      }
 
       free(thread_arg);
       continue;
     }
 
     res = pthread_create(&thread, &thread_attr, &client_worker, thread_arg);
-    if (res != 0)
-      log_error_break("pthread_create(): %s", strerror(res));
+    if (res != 0) {
+      log_error("pthread_create(): %s", strerror(res));
+      break;
+    }
   }
+
+  running = 0;
 
   syslog(LOG_INFO, "waiting for I/O workers...\n");
   join_io_workers();
