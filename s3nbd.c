@@ -170,10 +170,10 @@ arg->new_data=0;
   for (;;) {
     if (pthread_cond_wait(&arg->wakeup_cond, &arg->wakeup_mtx) != 0)
       break;
-if (!arg->new_data) continue;
 
     if (!running)
       break;
+if (!arg->new_data) continue;
 
     if (ntohl(arg->req.magic) != NBD_REQUEST_MAGIC) {
       if (io_send_reply(arg, EINVAL, 0) != 0)
