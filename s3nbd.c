@@ -927,17 +927,17 @@ void join_io_workers ()
 
   for (i = 0; i < num_io_threads; i++) {
     if ((res = pthread_mutex_lock(&io_threads[i].wakeup_mtx)) != 0)
-      warnx("pthread_mutex_lock(): %s", strerror(res));
+      syslog(LOG_ERR, "pthread_mutex_lock(): %s", strerror(res));
     if ((res = pthread_cond_signal(&io_threads[i].wakeup_cond)) != 0)
-      warnx("pthread_cond_signal(): %s", strerror(res));
+      syslog(LOG_ERR, "pthread_cond_signal(): %s", strerror(res));
     if ((res = pthread_mutex_unlock(&io_threads[i].wakeup_mtx)) != 0)
-      warnx("pthread_mutex_unlock(): %s", strerror(res));
+      syslog(LOG_ERR, "pthread_mutex_unlock(): %s", strerror(res));
     if ((res = pthread_join(io_threads[i].thread, NULL)) != 0)
-      warnx("pthread_join(): %s", strerror(res));
+      syslog(LOG_ERR, "pthread_join(): %s", strerror(res));
     if ((res = pthread_mutex_destroy(&io_threads[i].wakeup_mtx)) != 0)
-      warnx("pthread_mutex_destroy(): %s", strerror(res));
+      syslog(LOG_ERR, "pthread_mutex_destroy(): %s", strerror(res));
     if ((res = pthread_cond_destroy(&io_threads[i].wakeup_cond)) != 0)
-      warnx("pthread_cond_destroy(): %s", strerror(res));
+      syslog(LOG_ERR, "pthread_cond_destroy(): %s", strerror(res));
     free(io_threads[i].buffer);
   }
 }
