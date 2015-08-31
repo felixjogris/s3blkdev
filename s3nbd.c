@@ -15,6 +15,8 @@
 #define __USE_GNU
 #include <pthread.h>
 
+#define CHUNKSIZE (8 * 1024 * 1024)
+
 #define NBD_BUFSIZE 1024
 #define NBD_FLAG_FIXED_NEWSTYLE 1
 #define NBD_FLAG_NO_ZEROES 2
@@ -27,15 +29,13 @@
 #define NBD_REP_ERR_INVALID 0x80000003
 #define NBD_FLAG_HAS_FLAGS 1
 #define NBD_FLAG_SEND_FLUSH 4
-#define NBD_FLAG_SEND_FUA 8
 #define NBD_REQUEST_MAGIC 0x25609513
 #define NBD_REPLY_MAGIC 0x67446698
+#define NBD_CMD_MASK_COMMAND 0x0000ffff
 #define NBD_CMD_READ 0
 #define NBD_CMD_WRITE 1
 #define NBD_CMD_DISC 2
 #define NBD_CMD_FLUSH 3
-#define NBD_CMD_MASK_COMMAND 0x0000ffff
-#define NBD_CMD_FLAG_FUA (1<<16)
 
 const char const NBD_INIT_PASSWD[] = { 'N','B','D','M','A','G','I','C' };
 const char const NBD_OPTS_MAGIC[] =  { 'I','H','A','V','E','O','P','T' };
@@ -154,7 +154,6 @@ int io_send_reply (struct io_thread_arg *arg, uint32_t error, uint32_t len)
 void *io_worker (void *arg0)
 {
   struct io_thread_arg *arg = (struct io_thread_arg*) arg0;
-  uint32_t type;
   uint64_t offs;
 
   if (block_signals() != 0)
@@ -184,16 +183,19 @@ void *io_worker (void *arg0)
       continue;
     }
 
-    type = ntohl(arg->req.type);
     offs = ntohll(arg->req.offs);
 
-    switch (type & NBD_CMD_MASK_COMMAND) {
+    switch (ntohl(arg->req.type) & NBD_CMD_MASK_COMMAND) {
       case NBD_CMD_READ:
         memset(arg->buffer, 0, arg->req.len);
         io_send_reply(arg, 0, arg->req.len);
         break;
-default:
-io_send_reply(arg, EIO, 0);break;
+      case NBD_CMD_FLUSH:
+        sync();
+        break;
+      default:
+        io_send_reply(arg, EIO, 0);
+        break;
     }
   }
 
@@ -271,7 +273,7 @@ int nbd_send_device_info (int socket, char *devicename, uint32_t flags)
   if (write(socket, &devsize, sizeof(devsize)) != sizeof(devsize))
     return -1;
 
-  devflags = NBD_FLAG_HAS_FLAGS | NBD_FLAG_SEND_FLUSH | NBD_FLAG_SEND_FUA;
+  devflags = NBD_FLAG_HAS_FLAGS | NBD_FLAG_SEND_FLUSH;
   devflags = htons(devflags);
 
   if (write(socket, &devflags, sizeof(devflags)) != sizeof(devflags))
@@ -398,7 +400,6 @@ int client_worker_loop (struct client_thread_arg *arg)
   struct timeval timeout;
   struct io_thread_arg *slot;
   int res, result = -1;
-  uint32_t cmd;
 
   FD_ZERO(&rfds);
   FD_SET(arg->socket, &rfds);
@@ -428,8 +429,7 @@ int client_worker_loop (struct client_thread_arg *arg)
   }
 
   slot->req.type = ntohl(slot->req.type);
-  cmd = slot->req.type & NBD_CMD_MASK_COMMAND;
-  if (((cmd & NBD_CMD_WRITE) == NBD_CMD_WRITE) &&
+  if (((slot->req.type & NBD_CMD_WRITE) == NBD_CMD_WRITE) &&
       (slot->req.len > 0) &&
       (read(arg->socket, slot->buffer, slot->req.len) != slot->req.len))
     goto ERROR1;
