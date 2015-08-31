@@ -369,7 +369,7 @@ void *io_worker (void *arg0)
 
     arg->req.offs = ntohll(arg->req.offs);
 
-    switch (ntohl(arg->req.type) & NBD_CMD_MASK_COMMAND) {
+    switch (arg->req.type & NBD_CMD_MASK_COMMAND) {
       case NBD_CMD_READ:
         io_read_chunks(arg);
         break;
@@ -656,7 +656,7 @@ void *client_worker (void *arg0) {
   if (pthread_mutex_init(&arg->socket_mtx, NULL) != 0)
     goto ERROR;
 
-  if ((arg->cachedir_fd = open("/tmp", O_PATH|O_DIRECTORY)) < 0)
+  if ((arg->cachedir_fd = open("/tmp", O_RDONLY|O_DIRECTORY)) < 0)
     goto ERROR1;
 
 printf("client wants =%s=\n", devicename);
