@@ -786,7 +786,7 @@ ERROR:
   return NULL;
 }
 
-void sigterm_handler (int sig)
+void sigterm_handler (int sig __attribute__((unused)))
 {
   syslog(LOG_INFO, "SIGTERM received, going down...\n");
   running = 0;
