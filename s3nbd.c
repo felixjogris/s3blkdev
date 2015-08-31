@@ -50,10 +50,10 @@ struct client_thread_arg {
 };
 
 struct io_thread_arg {
-int new_data;
   pthread_t thread;
   pthread_cond_t wakeup_cond;
   pthread_mutex_t wakeup_mtx;
+  int busy;
   int socket;
   pthread_mutex_t *socket_mtx;
   struct __attribute__((packed)) {
@@ -165,15 +165,18 @@ void *io_worker (void *arg0)
 
   if (pthread_mutex_lock(&arg->wakeup_mtx) != 0)
     goto ERROR;
-arg->new_data=0;
 
   for (;;) {
+    arg->busy = 0;
+
     if (pthread_cond_wait(&arg->wakeup_cond, &arg->wakeup_mtx) != 0)
       break;
 
     if (!running)
       break;
-if (!arg->new_data) continue;
+
+    if (!arg->busy)
+      continue;
 
     if (ntohl(arg->req.magic) != NBD_REQUEST_MAGIC) {
       if (io_send_reply(arg, EINVAL, 0) != 0)
@@ -366,17 +369,23 @@ int nbd_handshake (int socket, char *devicename)
 
 struct io_thread_arg *find_free_io_worker ()
 {
-  int i = 0;
+  int res, i = 0;
 
   for (;;) {
-    switch (pthread_mutex_trylock(&io_threads[i].wakeup_mtx)) {
-      case 0:
-        return &io_threads[i];
-      case EBUSY:
-        break;
-      default:
-        return NULL;
+    res = pthread_mutex_trylock(&io_threads[i].wakeup_mtx);
+    if (res == EBUSY)
+      continue;
+
+    if (res != 0)
+      return NULL;
+
+    if (!io_threads[i].busy) {
+      io_threads[i].busy = 1;
+      return &io_threads[i];
     }
+      
+    if (pthread_mutex_unlock(&io_threads[i].wakeup_mtx) != 0)
+      return NULL;
 
     if (i++ >= num_io_threads)
       i = 0;
@@ -427,7 +436,7 @@ int client_worker_loop (struct client_thread_arg *arg)
 
   slot->socket = arg->socket;
   slot->socket_mtx = &arg->socket_mtx;
-slot->new_data = 1;
+
   if (pthread_cond_signal(&slot->wakeup_cond) != 0)
     goto ERROR1;
 
@@ -598,8 +607,10 @@ void launch_io_workers ()
   int i, res;
 
   for (i = 0; i < num_io_threads; i++) {
+    io_threads[i].busy = 1;
     io_threads[i].buflen = 1024 * 1024;
     io_threads[i].buffer = malloc(io_threads[i].buflen);
+
     if (io_threads[i].buffer == NULL)
       errx(1, "malloc() failed");
 
