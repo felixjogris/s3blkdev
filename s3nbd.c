@@ -1,4 +1,3 @@
-#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -15,6 +14,7 @@
 #include <limits.h>
 
 #define __USE_GNU
+#include <unistd.h>
 #include <fcntl.h>
 #include <pthread.h>
 
@@ -286,6 +286,57 @@ ERROR:
   return -1;
 }
 
+int io_write_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
+                    uint64_t start_offs, uint64_t end_offs, uint32_t *pos)
+{
+  int fd, result = -1;
+  int64_t len = end_offs - start_offs;
+
+  fd = io_open_chunk(arg->cachedir_fd, chunk_no, start_offs, end_offs);
+  if (fd < 0)
+    goto ERROR;
+
+  if (write(fd, arg->buffer + *pos, len) != len)
+    goto ERROR1;
+
+  *pos += len;
+
+  result = 0;
+
+ERROR1:
+  close(fd);
+
+ERROR:
+  return result;
+}
+
+int io_write_chunks (struct io_thread_arg *arg)
+{
+  uint64_t start_chunk, end_chunk, start_offs, end_offs;
+  uint32_t pos = 0;
+
+  start_chunk = arg->req.offs / CHUNKSIZE;
+  end_chunk = (arg->req.offs + arg->req.len) / CHUNKSIZE;
+  start_offs = arg->req.offs % CHUNKSIZE;
+  end_offs = (arg->req.offs + arg->req.len) % CHUNKSIZE;
+
+  while (start_chunk < end_chunk) {
+    if (io_write_chunk(arg, start_chunk, start_offs, CHUNKSIZE, &pos) != 0)
+      goto ERROR;
+    start_chunk++;
+    start_offs = 0;
+  }
+
+  if (io_write_chunk(arg, start_chunk, start_offs, end_offs, &pos) != 0)
+    goto ERROR;
+
+  return io_send_reply(arg, 0, 0);
+
+ERROR:
+  io_send_reply(arg, EIO, 0);
+  return -1;
+}
+
 void *io_worker (void *arg0)
 {
   struct io_thread_arg *arg = (struct io_thread_arg*) arg0;
@@ -322,9 +373,14 @@ void *io_worker (void *arg0)
       case NBD_CMD_READ:
         io_read_chunks(arg);
         break;
+      case NBD_CMD_WRITE:
+        io_write_chunks(arg);
+        break;
       case NBD_CMD_FLUSH:
-        sync();
-        io_send_reply(arg, 0, 0);
+        if (syncfs(arg->cachedir_fd) == 0)
+          io_send_reply(arg, 0, 0);
+        else
+          io_send_reply(arg, EIO, 0);
         break;
       default:
         io_send_reply(arg, EIO, 0);
