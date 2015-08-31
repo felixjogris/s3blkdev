@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <err.h>
 #include <netdb.h>
 #include <errno.h>
@@ -11,8 +12,10 @@
 #include <signal.h>
 #include <sys/un.h>
 #include <sys/select.h>
+#include <limits.h>
 
 #define __USE_GNU
+#include <fcntl.h>
 #include <pthread.h>
 
 #define CHUNKSIZE (8 * 1024 * 1024)
@@ -47,6 +50,7 @@ struct client_thread_arg {
   struct sockaddr addr;
   socklen_t addr_len;
   pthread_mutex_t socket_mtx;
+  int cachedir_fd;
 };
 
 struct io_thread_arg {
@@ -56,6 +60,7 @@ struct io_thread_arg {
   int busy;
   int socket;
   pthread_mutex_t *socket_mtx;
+  int cachedir_fd;
   struct __attribute__((packed)) {
     uint32_t magic;
     uint32_t type;
@@ -100,6 +105,20 @@ puts(name);
   pthread_setname_np(pthread_self(), name);
 }
 #endif
+
+int fetch_chunk (char *name, int fd)
+{
+  unsigned int i;
+  char buffer[4096];
+
+  name = name;
+  memset(buffer, 0, sizeof(buffer));
+
+  for (i = 0; i < CHUNKSIZE/sizeof(buffer); i++)
+    write(fd, buffer, sizeof(buffer));
+
+  return 0;
+}
 
 uint64_t htonll (uint64_t u64h)
 {
@@ -151,10 +170,125 @@ int io_send_reply (struct io_thread_arg *arg, uint32_t error, uint32_t len)
   return 0;
 }
 
+int io_lock_chunk (int fd, short int type, uint64_t start_offs,
+                   uint64_t end_offs)
+{
+  struct flock flk;
+  int result;
+
+  flk.l_type = type;
+  flk.l_whence = SEEK_SET;
+  flk.l_start = start_offs;
+  flk.l_len = end_offs - start_offs;
+  flk.l_pid = 0;
+
+  result = fcntl(fd, F_OFD_SETLKW, &flk);
+  if (result != 0)
+    return -1;
+
+  return 0;
+}
+
+int io_open_chunk (int cachedir_fd, uint64_t chunk_no,
+                   uint64_t start_offs, uint64_t end_offs)
+{
+  char name[17];
+  int fd;
+  struct stat st;
+
+  snprintf(name, sizeof(name), "%016llx", (unsigned long long) chunk_no);
+
+  for (;;) {
+    fd = openat(cachedir_fd, name, O_RDWR|O_CREAT, S_IRUSR|S_IWUSR);
+    if (fd < 0)
+      goto ERROR;
+
+    if (io_lock_chunk(fd, F_RDLCK, start_offs, end_offs) != 0)
+      goto ERROR1;
+
+    if (fstatat(cachedir_fd, name, &st, 0) != 0) {
+      close(fd);
+      continue;
+    }
+
+    break;
+  }
+
+  if (st.st_size != CHUNKSIZE) {
+    if (io_lock_chunk(fd, F_WRLCK, 0, CHUNKSIZE) != 0)
+      goto ERROR1;
+    if (fstatat(cachedir_fd, name, &st, 0) != 0)
+      goto ERROR1;
+    if ((st.st_size != CHUNKSIZE) && (fetch_chunk(name, fd) != 0))
+      goto ERROR1;
+  }
+
+  if (lseek(fd, start_offs, SEEK_SET) == (off_t) -1)
+    goto ERROR1;
+
+  return fd;
+
+ERROR1:
+  close(fd);
+
+ERROR:
+  return -1;
+}
+
+int io_read_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
+                   uint64_t start_offs, uint64_t end_offs, uint32_t *pos)
+{
+  int fd, result = -1;
+  int64_t len = end_offs - start_offs;
+
+  fd = io_open_chunk(arg->cachedir_fd, chunk_no, start_offs, end_offs);
+  if (fd < 0)
+    goto ERROR;
+
+  if (read(fd, arg->buffer + *pos, len) != len)
+    goto ERROR1;
+
+  *pos += len;
+
+  result = 0;
+
+ERROR1:
+  close(fd);
+
+ERROR:
+  return result;
+}
+
+int io_read_chunks (struct io_thread_arg *arg)
+{
+  uint64_t start_chunk, end_chunk, start_offs, end_offs;
+  uint32_t pos = 0;
+
+  start_chunk = arg->req.offs / CHUNKSIZE;
+  end_chunk = (arg->req.offs + arg->req.len) / CHUNKSIZE;
+  start_offs = arg->req.offs % CHUNKSIZE;
+  end_offs = (arg->req.offs + arg->req.len) % CHUNKSIZE;
+
+  while (start_chunk < end_chunk) {
+    if (io_read_chunk(arg, start_chunk, start_offs, CHUNKSIZE, &pos) != 0)
+      goto ERROR;
+    start_chunk++;
+    start_offs = 0;
+  }
+
+  if (io_read_chunk(arg, start_chunk, start_offs, end_offs, &pos) != 0)
+    goto ERROR;
+
+  return io_send_reply(arg, 0, pos);
+
+ERROR:
+  io_send_reply(arg, EIO, 0);
+  return -1;
+}
+
 void *io_worker (void *arg0)
 {
   struct io_thread_arg *arg = (struct io_thread_arg*) arg0;
-  uint64_t offs;
 
   if (block_signals() != 0)
     goto ERROR;
@@ -178,20 +312,19 @@ void *io_worker (void *arg0)
       continue;
 
     if (ntohl(arg->req.magic) != NBD_REQUEST_MAGIC) {
-      if (io_send_reply(arg, EINVAL, 0) != 0)
-        break;
+      io_send_reply(arg, EINVAL, 0);
       continue;
     }
 
-    offs = ntohll(arg->req.offs);
+    arg->req.offs = ntohll(arg->req.offs);
 
     switch (ntohl(arg->req.type) & NBD_CMD_MASK_COMMAND) {
       case NBD_CMD_READ:
-        memset(arg->buffer, 0, arg->req.len);
-        io_send_reply(arg, 0, arg->req.len);
+        io_read_chunks(arg);
         break;
       case NBD_CMD_FLUSH:
         sync();
+        io_send_reply(arg, 0, 0);
         break;
       default:
         io_send_reply(arg, EIO, 0);
@@ -436,6 +569,7 @@ int client_worker_loop (struct client_thread_arg *arg)
 
   slot->socket = arg->socket;
   slot->socket_mtx = &arg->socket_mtx;
+  slot->cachedir_fd = arg->cachedir_fd;
 
   if (pthread_cond_signal(&slot->wakeup_cond) != 0)
     goto ERROR1;
@@ -466,11 +600,17 @@ void *client_worker (void *arg0) {
   if (pthread_mutex_init(&arg->socket_mtx, NULL) != 0)
     goto ERROR;
 
+  if ((arg->cachedir_fd = open("/tmp", O_PATH|O_DIRECTORY)) < 0)
+    goto ERROR1;
+
 printf("client wants =%s=\n", devicename);
 
   while (client_worker_loop(arg) == 0)
     ;;
 
+  close(arg->cachedir_fd);
+
+ERROR1:
   pthread_mutex_destroy(&arg->socket_mtx);
 
 ERROR:
