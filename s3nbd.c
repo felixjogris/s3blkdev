@@ -762,13 +762,13 @@ void *client_worker (void *arg0) {
   }
 
   client_address(arg, clientname, sizeof(clientname));
-  syslog(LOG_INFO, "client %s connects to device %s\n", clientname,
+  syslog(LOG_INFO, "client %s connecting to device %s\n", clientname,
          devicename);
 
   while (client_worker_loop(arg) == 0)
     ;;
 
-  syslog(LOG_INFO, "client %s disconnects from device %s\n", clientname,
+  syslog(LOG_INFO, "client %s disconnecting from device %s\n", clientname,
          devicename);
 
   if (close(arg->cachedir_fd) != 0)
