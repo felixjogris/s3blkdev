@@ -50,6 +50,7 @@ struct client_thread_arg {
 };
 
 struct io_thread_arg {
+int new_data;
   pthread_t thread;
   pthread_cond_t wakeup_cond;
   pthread_mutex_t wakeup_mtx;
@@ -164,10 +165,13 @@ void *io_worker (void *arg0)
 
   if (pthread_mutex_lock(&arg->wakeup_mtx) != 0)
     goto ERROR;
+arg->new_data=0;
 
   for (;;) {
     if (pthread_cond_wait(&arg->wakeup_cond, &arg->wakeup_mtx) != 0)
       break;
+if (!arg->new_data) continue;
+
     if (!running)
       break;
 
@@ -423,7 +427,7 @@ int client_worker_loop (struct client_thread_arg *arg)
 
   slot->socket = arg->socket;
   slot->socket_mtx = &arg->socket_mtx;
-
+slot->new_data = 1;
   if (pthread_cond_signal(&slot->wakeup_cond) != 0)
     goto ERROR1;
 
