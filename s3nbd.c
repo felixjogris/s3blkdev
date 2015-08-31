@@ -106,6 +106,30 @@ puts(name);
 }
 #endif
 
+ssize_t read_all (int fd, void *buffer, size_t len)
+{
+  ssize_t res;
+
+  for (; len > 0; buffer += res, len -= res) {
+    if ((res = read(fd, buffer, len)) < 0)
+      return -1;
+  }
+
+  return 0;
+}
+
+ssize_t write_all (int fd, const void *buffer, size_t len)
+{
+  ssize_t res;
+
+  for (; len > 0; buffer += res, len -= res) {
+    if ((res = write(fd, buffer, len)) < 0)
+      return -1;
+  }
+
+  return 0;
+}
+
 int fetch_chunk (char *name, int fd)
 {
   unsigned int i;
@@ -115,7 +139,8 @@ int fetch_chunk (char *name, int fd)
   memset(buffer, 0, sizeof(buffer));
 
   for (i = 0; i < CHUNKSIZE/sizeof(buffer); i++)
-    write(fd, buffer, sizeof(buffer));
+    if (write_all(fd, buffer, sizeof(buffer)) != 0)
+      return -1;
 
   return 0;
 }
@@ -161,8 +186,8 @@ int io_send_reply (struct io_thread_arg *arg, uint32_t error, uint32_t len)
   if (pthread_mutex_lock(arg->socket_mtx) != 0)
     return -1;
 
-  if ((write(arg->socket, &arg->req, hdrlen) == hdrlen) && (len > 0))
-    write(arg->socket, arg->buffer, len);
+  if ((write_all(arg->socket, &arg->req, hdrlen) == 0) && (len > 0))
+    write_all(arg->socket, arg->buffer, len);
 
   if (pthread_mutex_unlock(arg->socket_mtx) != 0)
     return -1;
@@ -245,7 +270,7 @@ int io_read_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
   if (fd < 0)
     goto ERROR;
 
-  if (read(fd, arg->buffer + *pos, len) != len)
+  if (read_all(fd, arg->buffer + *pos, len) != 0)
     goto ERROR1;
 
   *pos += len;
@@ -296,7 +321,7 @@ int io_write_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
   if (fd < 0)
     goto ERROR;
 
-  if (write(fd, arg->buffer + *pos, len) != len)
+  if (write_all(fd, arg->buffer + *pos, len) != 0)
     goto ERROR1;
 
   *pos += len;
@@ -398,36 +423,35 @@ int nbd_send_reply (int socket, uint32_t opt_type, uint32_t reply_type,
                     char *reply_data)
 {
   uint32_t reply_len;
-  int len;
-  ssize_t written;
+  int len, res;
 
-  written =  write(socket, NBD_OPTS_REPLY_MAGIC, sizeof(NBD_OPTS_REPLY_MAGIC));
-  if (written != sizeof(NBD_OPTS_REPLY_MAGIC))
+  res = write_all(socket, NBD_OPTS_REPLY_MAGIC, sizeof(NBD_OPTS_REPLY_MAGIC));
+  if (res != 0)
     return -1;
 
-  if (write(socket, &opt_type, sizeof(opt_type)) != sizeof(opt_type))
+  if (write_all(socket, &opt_type, sizeof(opt_type)) != 0)
     return -1;
 
   reply_type = htonl(reply_type);
-  if (write(socket, &reply_type, sizeof(reply_type)) != sizeof(reply_type))
+  if (write_all(socket, &reply_type, sizeof(reply_type)) != 0)
     return -1;
 
   if ((reply_data == NULL) || (*reply_data == '\0')) {
     reply_len = 0;
-    if (write(socket, &reply_len, sizeof(reply_len)) != sizeof(reply_len))
+    if (write_all(socket, &reply_len, sizeof(reply_len)) != 0)
       return -1;
   } else {
     len = strlen(reply_data);
     reply_len = htonl(len + sizeof(reply_len));
 
-    if (write(socket, &reply_len, sizeof(reply_len)) != sizeof(reply_len))
+    if (write_all(socket, &reply_len, sizeof(reply_len)) != 0)
       return -1;
 
     reply_len = htonl(len);
-    if (write(socket, &reply_len, sizeof(reply_len)) != sizeof(reply_len))
+    if (write_all(socket, &reply_len, sizeof(reply_len)) != 0)
       return -1;
 
-    if (write(socket, reply_data, len) != len)
+    if (write_all(socket, reply_data, len) != 0)
       return -1;
   }
 
@@ -459,18 +483,18 @@ int nbd_send_device_info (int socket, char *devicename, uint32_t flags)
   devsize = 100 * 1024 * 1024;
   devsize = htonll(devsize);
 
-  if (write(socket, &devsize, sizeof(devsize)) != sizeof(devsize))
+  if (write_all(socket, &devsize, sizeof(devsize)) != 0)
     return -1;
 
   devflags = NBD_FLAG_HAS_FLAGS | NBD_FLAG_SEND_FLUSH;
   devflags = htons(devflags);
 
-  if (write(socket, &devflags, sizeof(devflags)) != sizeof(devflags))
+  if (write_all(socket, &devflags, sizeof(devflags)) != 0)
     return -1;
 
   if ((flags & NBD_FLAG_NO_ZEROES) != NBD_FLAG_NO_ZEROES) {
     memset(padding, 0, sizeof(padding));
-    if (write(socket, padding, sizeof(padding)) != sizeof(padding))
+    if (write_all(socket, padding, sizeof(padding)) != 0)
       return -1;
   }
 
@@ -482,22 +506,19 @@ int nbd_handshake (int socket, char *devicename)
   uint32_t flags, opt_type, opt_len;
   char ihaveopt[8];
   uint16_t srv_flags;
-  int written;
 
-  written = write(socket, NBD_INIT_PASSWD, sizeof(NBD_INIT_PASSWD));
-  if (written != sizeof(NBD_INIT_PASSWD))
+  if (write_all(socket, NBD_INIT_PASSWD, sizeof(NBD_INIT_PASSWD)) != 0)
     return -1;
 
-  written = write(socket, NBD_OPTS_MAGIC, sizeof(NBD_OPTS_MAGIC));
-  if (written != sizeof(NBD_OPTS_MAGIC))
+  if (write_all(socket, NBD_OPTS_MAGIC, sizeof(NBD_OPTS_MAGIC)) != 0)
     return -1;
 
   srv_flags = NBD_FLAG_FIXED_NEWSTYLE | NBD_FLAG_NO_ZEROES;
   srv_flags = htons(srv_flags);
-  if (write(socket, &srv_flags, sizeof(srv_flags)) != sizeof(srv_flags))
+  if (write_all(socket, &srv_flags, sizeof(srv_flags)) != 0)
     return -1;
 
-  if (read(socket, &flags, sizeof(flags)) != sizeof(flags))
+  if (read_all(socket, &flags, sizeof(flags)) != 0)
     return -1;
 
   flags = ntohl(flags);
@@ -505,16 +526,16 @@ int nbd_handshake (int socket, char *devicename)
     return -1;
 
   for (;;) {
-    if (read(socket, ihaveopt, sizeof(ihaveopt)) != sizeof(ihaveopt))
+    if (read_all(socket, ihaveopt, sizeof(ihaveopt)) != 0)
       return -1;
 
     if (memcmp(ihaveopt, NBD_OPTS_MAGIC, sizeof(NBD_OPTS_MAGIC)) != 0)
       return -1;
 
-    if (read(socket, &opt_type, sizeof(opt_type)) != sizeof(opt_type))
+    if (read_all(socket, &opt_type, sizeof(opt_type)) != 0)
       return -1;
 
-    if (read(socket, &opt_len, sizeof(opt_len)) != sizeof(opt_len))
+    if (read_all(socket, &opt_len, sizeof(opt_len)) != 0)
       return -1;
 
     opt_len = ntohl(opt_len);
@@ -524,7 +545,7 @@ int nbd_handshake (int socket, char *devicename)
     }
 
     if (opt_len > 0) {
-      if (read(socket, devicename, opt_len) != opt_len)
+      if (read_all(socket, devicename, opt_len) != 0)
         return -1;
     }
 
@@ -606,7 +627,7 @@ int client_worker_loop (struct client_thread_arg *arg)
   if (slot == NULL)
     goto ERROR;
 
-  if (read(arg->socket, &slot->req, sizeof(slot->req)) != sizeof(slot->req))
+  if (read_all(arg->socket, &slot->req, sizeof(slot->req)) != 0)
     goto ERROR1;
 
   slot->req.len = ntohl(slot->req.len);
@@ -620,7 +641,7 @@ int client_worker_loop (struct client_thread_arg *arg)
   slot->req.type = ntohl(slot->req.type);
   if (((slot->req.type & NBD_CMD_WRITE) == NBD_CMD_WRITE) &&
       (slot->req.len > 0) &&
-      (read(arg->socket, slot->buffer, slot->req.len) != slot->req.len))
+      (read_all(arg->socket, slot->buffer, slot->req.len) != 0))
     goto ERROR1;
 
   slot->socket = arg->socket;
