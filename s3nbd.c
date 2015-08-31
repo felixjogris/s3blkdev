@@ -698,13 +698,19 @@ int client_worker_loop (struct client_thread_arg *arg)
   }
 
   slot->req.type = ntohl(slot->req.type);
-  if (((slot->req.type & NBD_CMD_WRITE) == NBD_CMD_WRITE) &&
-      (slot->req.len > 0) &&
-      (read_all(arg->socket, slot->buffer, slot->req.len) != 0))
-    goto ERROR1;
+  switch (slot->req.type & NBD_CMD_MASK_COMMAND) {
+    case NBD_CMD_WRITE:
+      if ((slot->req.len > 0) &&
+          (read_all(arg->socket, slot->buffer, slot->req.len) != 0))
+        goto ERROR1;
+      break;
 
-  if ((slot->req.type & NBD_CMD_DISC) == NBD_CMD_DISC)
-    goto ERROR1;
+    case NBD_CMD_DISC:
+      goto ERROR1;
+
+    default:
+      break;
+  }
 
   slot->socket = arg->socket;
   slot->socket_mtx = &arg->socket_mtx;
@@ -749,7 +755,8 @@ void *client_worker (void *arg0) {
     goto ERROR;
   }
 
-  if ((arg->cachedir_fd = open("/tmp", O_RDONLY|O_DIRECTORY)) < 0) {
+/* TODO */
+  if ((arg->cachedir_fd = open("/var/tmp/s3nbd", O_RDONLY|O_DIRECTORY)) < 0) {
     logerr("open(): %s", strerror(errno));
     goto ERROR1;
   }
