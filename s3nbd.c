@@ -493,7 +493,7 @@ int nbd_send_device_info (int socket, char *devicename, uint32_t flags)
   if (strcmp(devicename, "tehdisk"))
     return -1;
 
-  devsize = 100 * 1024 * 1024;
+  devsize = 1100 * 1024 * 1024;
   devsize = htonll(devsize);
 
   if (write_all(socket, &devsize, sizeof(devsize)) != 0)
