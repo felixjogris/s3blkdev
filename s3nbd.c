@@ -12,11 +12,15 @@
 #include <sys/un.h>
 #include <sys/select.h>
 #include <limits.h>
+#include <syslog.h>
 
 #define __USE_GNU
 #include <unistd.h>
 #include <fcntl.h>
 #include <pthread.h>
+
+#define logerr(fmt, params ...) syslog(LOG_ERR, "%s [%s:%i]: " fmt "\n", \
+  __FUNCTION__, __FILE__, __LINE__, ## params)
 
 #define CHUNKSIZE (8 * 1024 * 1024)
 
@@ -76,43 +80,15 @@ int running = 1;
 int num_io_threads = 16;
 struct io_thread_arg io_threads[128];
 
-#if 0
-void set_client_thread_name (struct client_thread_arg *client)
-{
-  char name[16], addr[INET6_ADDRSTRLEN];
-  struct sockaddr_in *sin;
-  struct sockaddr_in6 *sin6;
-
-  switch (client->addr.sa_family) {
-    case AF_INET:
-      sin = (struct sockaddr_in*) &client->addr;
-      snprintf(name, sizeof(name), "client %s:%u",
-               inet_ntop(sin->sin_family, &sin->sin_addr, addr, sizeof(addr)),
-               htons(sin->sin_port));
-      break;
-    case AF_INET6:
-      sin6 = (struct sockaddr_in6*) &client->addr;
-      snprintf(name, sizeof(name), "client [%s]:%u",
-               inet_ntop(sin6->sin6_family, &sin6->sin6_addr, addr,
-                         sizeof(addr)),
-               htons(sin6->sin6_port));
-      break;
-    default:
-      snprintf(name, sizeof(name), "client %s", "<unknown address family>");
-      break;
-  }
-puts(name);
-  pthread_setname_np(pthread_self(), name);
-}
-#endif
-
 ssize_t read_all (int fd, void *buffer, size_t len)
 {
   ssize_t res;
 
   for (; len > 0; buffer += res, len -= res) {
-    if ((res = read(fd, buffer, len)) < 0)
+    if ((res = read(fd, buffer, len)) < 0) {
+      logerr("read(): %s", strerror(errno));
       return -1;
+    }
   }
 
   return 0;
@@ -123,8 +99,10 @@ ssize_t write_all (int fd, const void *buffer, size_t len)
   ssize_t res;
 
   for (; len > 0; buffer += res, len -= res) {
-    if ((res = write(fd, buffer, len)) < 0)
+    if ((res = write(fd, buffer, len)) < 0) {
+      logerr("write(): %s", strerror(errno));
       return -1;
+    }
   }
 
   return 0;
@@ -165,12 +143,17 @@ uint64_t ntohll (uint64_t u64n)
 int block_signals ()
 {
   sigset_t sigset;
+  int res;
 
-  if (sigfillset(&sigset) != 0)
+  if (sigfillset(&sigset) != 0) {
+    logerr("sigfillset(): %s", strerror(errno));
     return -1;
+  }
 
-  if (pthread_sigmask(SIG_SETMASK, &sigset, NULL) != 0)
+  if ((res = pthread_sigmask(SIG_SETMASK, &sigset, NULL)) != 0) {
+    logerr("pthread_sigmask(): %s", strerror(res));
     return -1;
+  }
 
   return 0;
 }
@@ -179,18 +162,23 @@ int io_send_reply (struct io_thread_arg *arg, uint32_t error, uint32_t len)
 {
   const int hdrlen = sizeof(arg->req.magic) + sizeof(arg->req.type) +
                      sizeof(arg->req.handle);
+  int res;
 
   arg->req.magic = htonl(NBD_REPLY_MAGIC);
   arg->req.type = htonl(error);
 
-  if (pthread_mutex_lock(arg->socket_mtx) != 0)
+  if ((res = pthread_mutex_lock(arg->socket_mtx)) != 0) {
+    logerr("pthread_mutex_lock(): %s", strerror(res));
     return -1;
+  }
 
   if ((write_all(arg->socket, &arg->req, hdrlen) == 0) && (len > 0))
     write_all(arg->socket, arg->buffer, len);
 
-  if (pthread_mutex_unlock(arg->socket_mtx) != 0)
+  if ((res = pthread_mutex_unlock(arg->socket_mtx)) != 0) {
+    logerr("pthread_mutex_unlock(): %s", strerror(res));
     return -1;
+  }
 
   return 0;
 }
@@ -208,8 +196,10 @@ int io_lock_chunk (int fd, short int type, uint64_t start_offs,
   flk.l_pid = 0;
 
   result = fcntl(fd, F_OFD_SETLKW, &flk);
-  if (result != 0)
+  if (result != 0) {
+    logerr("fcntl(): %s", strerror(errno));
     return -1;
+  }
 
   return 0;
 }
@@ -225,14 +215,17 @@ int io_open_chunk (int cachedir_fd, uint64_t chunk_no,
 
   for (;;) {
     fd = openat(cachedir_fd, name, O_RDWR|O_CREAT, S_IRUSR|S_IWUSR);
-    if (fd < 0)
+    if (fd < 0) {
+      logerr("openat(): %s", strerror(errno));
       goto ERROR;
+    }
 
     if (io_lock_chunk(fd, F_RDLCK, start_offs, end_offs) != 0)
       goto ERROR1;
 
     if (fstatat(cachedir_fd, name, &st, 0) != 0) {
-      close(fd);
+      if (close(fd) != 0)
+        logerr("close(): %s", strerror(errno));
       continue;
     }
 
@@ -242,19 +235,24 @@ int io_open_chunk (int cachedir_fd, uint64_t chunk_no,
   if (st.st_size != CHUNKSIZE) {
     if (io_lock_chunk(fd, F_WRLCK, 0, CHUNKSIZE) != 0)
       goto ERROR1;
-    if (fstatat(cachedir_fd, name, &st, 0) != 0)
+    if (fstatat(cachedir_fd, name, &st, 0) != 0) {
+      logerr("fstatat(): %s", strerror(errno));
       goto ERROR1;
+    }
     if ((st.st_size != CHUNKSIZE) && (fetch_chunk(name, fd) != 0))
       goto ERROR1;
   }
 
-  if (lseek(fd, start_offs, SEEK_SET) == (off_t) -1)
+  if (lseek(fd, start_offs, SEEK_SET) == (off_t) -1) {
+    logerr("lseek(): %s", strerror(errno));
     goto ERROR1;
+  }
 
   return fd;
 
 ERROR1:
-  close(fd);
+  if (close(fd) != 0)
+    logerr("close(): %s", strerror(errno));
 
 ERROR:
   return -1;
@@ -365,21 +363,28 @@ ERROR:
 void *io_worker (void *arg0)
 {
   struct io_thread_arg *arg = (struct io_thread_arg*) arg0;
+  int res;
 
   if (block_signals() != 0)
     goto ERROR;
 
-  if (pthread_setname_np(pthread_self(), "I/O worker") != 0)
+  if ((res = pthread_setname_np(pthread_self(), "I/O worker")) != 0) {
+    logerr("pthread_setname_np(): %s", strerror(res));
     goto ERROR;
+  }
 
-  if (pthread_mutex_lock(&arg->wakeup_mtx) != 0)
+  if ((res = pthread_mutex_lock(&arg->wakeup_mtx)) != 0) {
+    logerr("pthread_mutex_lock(): %s", strerror(res));
     goto ERROR;
+  }
 
   for (;;) {
     arg->busy = 0;
 
-    if (pthread_cond_wait(&arg->wakeup_cond, &arg->wakeup_mtx) != 0)
+    if ((res = pthread_cond_wait(&arg->wakeup_cond, &arg->wakeup_mtx)) != 0) {
+      logerr("pthread_cond_wait(): %s", strerror(res));
       break;
+    }
 
     if (!running)
       break;
@@ -388,6 +393,7 @@ void *io_worker (void *arg0)
       continue;
 
     if (ntohl(arg->req.magic) != NBD_REQUEST_MAGIC) {
+      logerr("%s", "request without NDB_REQUEST_MAGIC");
       io_send_reply(arg, EINVAL, 0);
       continue;
     }
@@ -404,16 +410,20 @@ void *io_worker (void *arg0)
       case NBD_CMD_FLUSH:
         if (syncfs(arg->cachedir_fd) == 0)
           io_send_reply(arg, 0, 0);
-        else
+        else {
+          logerr("syncfs(): %s", strerror(errno));
           io_send_reply(arg, EIO, 0);
+        }
         break;
       default:
+        logerr("unknown request type: %u", arg->req.type);
         io_send_reply(arg, EIO, 0);
         break;
     }
   }
 
-  pthread_mutex_unlock(&arg->wakeup_mtx);
+  if ((res = pthread_mutex_unlock(&arg->wakeup_mtx)) != 0)
+    logerr("pthread_mutex_unlock(): %s", strerror(res));
 
 ERROR:
   return NULL;
@@ -458,6 +468,7 @@ int nbd_send_reply (int socket, uint32_t opt_type, uint32_t reply_type,
   return 0;
 }
 
+/* TODO */
 int nbd_send_devicelist (int socket, uint32_t opt_type)
 {
   char *devlist[]={"not yet implemented", "2 be done", "yo mama's a fine disk"};
@@ -471,6 +482,7 @@ int nbd_send_devicelist (int socket, uint32_t opt_type)
   return nbd_send_reply(socket, opt_type, NBD_REP_ACK, NULL);
 }
 
+/* TODO */
 int nbd_send_device_info (int socket, char *devicename, uint32_t flags)
 {
   uint64_t devsize;
@@ -501,7 +513,7 @@ int nbd_send_device_info (int socket, char *devicename, uint32_t flags)
   return 0;
 }
 
-int nbd_handshake (int socket, char *devicename)
+int nbd_handshake (int socket, char *devicename, char *clientname)
 {
   uint32_t flags, opt_type, opt_len;
   char ihaveopt[8];
@@ -522,15 +534,19 @@ int nbd_handshake (int socket, char *devicename)
     return -1;
 
   flags = ntohl(flags);
-  if ((flags & NBD_FLAG_FIXED_NEWSTYLE) != NBD_FLAG_FIXED_NEWSTYLE)
+  if ((flags & NBD_FLAG_FIXED_NEWSTYLE) != NBD_FLAG_FIXED_NEWSTYLE) {
+    logerr("oldstyle client %s not supported", clientname);
     return -1;
+  }
 
   for (;;) {
     if (read_all(socket, ihaveopt, sizeof(ihaveopt)) != 0)
       return -1;
 
-    if (memcmp(ihaveopt, NBD_OPTS_MAGIC, sizeof(NBD_OPTS_MAGIC)) != 0)
+    if (memcmp(ihaveopt, NBD_OPTS_MAGIC, sizeof(NBD_OPTS_MAGIC)) != 0) {
+      logerr("client %s sent no NBD_OPTS_MAGIC", clientname);
       return -1;
+    }
 
     if (read_all(socket, &opt_type, sizeof(opt_type)) != 0)
       return -1;
@@ -540,6 +556,7 @@ int nbd_handshake (int socket, char *devicename)
 
     opt_len = ntohl(opt_len);
     if (opt_len >= NBD_BUFSIZE) {
+      logerr("client %s opt_len %u too large", clientname, opt_len);
       nbd_send_reply(socket, opt_type, NBD_REP_ERR_INVALID, NULL);
       return -1;
     }
@@ -572,6 +589,7 @@ int nbd_handshake (int socket, char *devicename)
         break;
 
       default:
+        logerr("client %s unknown opt_type %u", clientname, opt_type);
         if (nbd_send_reply(socket, opt_type, NBD_REP_ERR_UNSUP, NULL) != 0)
           return -1;
         break;
@@ -588,19 +606,50 @@ struct io_thread_arg *find_free_io_worker ()
     if (res == EBUSY)
       continue;
 
-    if (res != 0)
+    if (res != 0) {
+      logerr("pthread_mutex_trylock(): %s", strerror(res));
       return NULL;
+    }
 
     if (!io_threads[i].busy) {
       io_threads[i].busy = 1;
       return &io_threads[i];
     }
       
-    if (pthread_mutex_unlock(&io_threads[i].wakeup_mtx) != 0)
+    if ((res = pthread_mutex_unlock(&io_threads[i].wakeup_mtx)) != 0) {
+      logerr("pthread_mutex_unlock(): %s", strerror(res));
       return NULL;
+    }
 
     if (i++ >= num_io_threads)
       i = 0;
+  }
+}
+
+void client_address (struct client_thread_arg *client, char *buffer,
+                     size_t bufsiz)
+{
+  char addr[INET6_ADDRSTRLEN];
+  struct sockaddr_in *sin;
+  struct sockaddr_in6 *sin6;
+
+  switch (client->addr.sa_family) {
+    case AF_INET:
+      sin = (struct sockaddr_in*) &client->addr;
+      snprintf(buffer, bufsiz, "%s:%u",
+               inet_ntop(sin->sin_family, &sin->sin_addr, addr, sizeof(addr)),
+               htons(sin->sin_port));
+      break;
+    case AF_INET6:
+      sin6 = (struct sockaddr_in6*) &client->addr;
+      snprintf(buffer, bufsiz, "[%s]:%u",
+               inet_ntop(sin6->sin6_family, &sin6->sin6_addr, addr,
+                         sizeof(addr)),
+               htons(sin6->sin6_port));
+      break;
+    default:
+      snprintf(buffer, bufsiz, "%s", "<unknown address family>");
+      break;
   }
 }
 
@@ -620,7 +669,11 @@ int client_worker_loop (struct client_thread_arg *arg)
   res = select(arg->socket + 1, &rfds, NULL, NULL, &timeout);
   if (res == 0)
     return 0;
-  if (!running || (res < 0))
+  if (res < 0) {
+    logerr("select(): %s", strerror(errno));
+    goto ERROR;
+  }
+  if (!running)
     goto ERROR;
 
   slot = find_free_io_worker();
@@ -634,8 +687,10 @@ int client_worker_loop (struct client_thread_arg *arg)
   if (slot->req.len > slot->buflen) {
     slot->buflen = slot->req.len;
     slot->buffer = realloc(slot->buffer, slot->buflen);
-    if (slot->buffer == NULL)
+    if (slot->buffer == NULL) {
+      logerr("%s", "realloc() failed");
       goto ERROR1;
+    }
   }
 
   slot->req.type = ntohl(slot->req.type);
@@ -648,14 +703,18 @@ int client_worker_loop (struct client_thread_arg *arg)
   slot->socket_mtx = &arg->socket_mtx;
   slot->cachedir_fd = arg->cachedir_fd;
 
-  if (pthread_cond_signal(&slot->wakeup_cond) != 0)
+  if ((res = pthread_cond_signal(&slot->wakeup_cond)) != 0) {
+    logerr("pthread_cond_signal(): %s", strerror(res));
     goto ERROR1;
+  }
 
   result = 0;
 
 ERROR1:
-  if (pthread_mutex_unlock(&slot->wakeup_mtx) != 0)
+  if ((res = pthread_mutex_unlock(&slot->wakeup_mtx)) != 0) {
+    logerr("pthread_mutex_unlock(): %s", strerror(res));
     result = -1;
+  }
 
 ERROR:
   return result;
@@ -664,40 +723,58 @@ ERROR:
 void *client_worker (void *arg0) {
   struct client_thread_arg *arg = (struct client_thread_arg*) arg0;
   char devicename[NBD_BUFSIZE];
+  char clientname[INET6_ADDRSTRLEN + 8];
+  int res;
 
   if (block_signals() != 0)
     goto ERROR;
 
-  if (pthread_setname_np(pthread_self(), "Client worker") != 0)
+  if ((res = pthread_setname_np(pthread_self(), "Client worker")) != 0) {
+    logerr("pthread_setname_np(): %s", strerror(res));
+    goto ERROR;
+  }
+
+  if (nbd_handshake(arg->socket, devicename, clientname) != 0)
     goto ERROR;
 
-  if (nbd_handshake(arg->socket, devicename) != 0)
+  if ((res = pthread_mutex_init(&arg->socket_mtx, NULL)) != 0) {
+    logerr("pthread_mutex_init(): %s", strerror(res));
     goto ERROR;
+  }
 
-  if (pthread_mutex_init(&arg->socket_mtx, NULL) != 0)
-    goto ERROR;
-
-  if ((arg->cachedir_fd = open("/tmp", O_RDONLY|O_DIRECTORY)) < 0)
+  if ((arg->cachedir_fd = open("/tmp", O_RDONLY|O_DIRECTORY)) < 0) {
+    logerr("open(): %s", strerror(errno));
     goto ERROR1;
+  }
 
-printf("client wants =%s=\n", devicename);
+  client_address(arg, clientname, sizeof(clientname));
+  syslog(LOG_INFO, "client %s connects to device %s\n", clientname,
+         devicename);
 
   while (client_worker_loop(arg) == 0)
     ;;
 
-  close(arg->cachedir_fd);
+  syslog(LOG_INFO, "client %s disconnects from device %s\n", clientname,
+         devicename);
+
+  if (close(arg->cachedir_fd) != 0)
+    logerr("close(): %s", strerror(errno));
 
 ERROR1:
-  pthread_mutex_destroy(&arg->socket_mtx);
+  if ((res = pthread_mutex_destroy(&arg->socket_mtx)) != 0)
+    logerr("pthread_mutex_destroy(): %s", strerror(res));
 
 ERROR:
-  close(arg->socket);
+  if (close(arg->socket) != 0)
+    logerr("close(): %s", strerror(errno));
+
   free(arg0);
   return NULL;
 }
 
 void sigterm_handler (int sig)
 {
+  syslog(LOG_INFO, "SIGTERM received, going down...\n");
   running = 0;
 }
 
@@ -867,6 +944,13 @@ void join_io_workers ()
 
 int main (int argc, char **argv)
 {
+#define log_error_break(fmt, params ...) { \
+  if (foreground) warnx(fmt "\n", ## params); \
+  else syslog(LOG_WARNING, fmt "\n", ## params); \
+  } \
+  running = 0; \
+  break
+
   char *ip = "0.0.0.0", *port = "10809", *configdir = "/etc/s3nbd";
   int foreground = 0, listen_socket, res;
   pthread_attr_t thread_attr;
@@ -894,35 +978,36 @@ int main (int argc, char **argv)
   if (res != 0)
     errx(1, "pthread_attr_setdetachstate(): %s", strerror(res));
 
+  openlog("s3nbd", LOG_NDELAY|LOG_PID, LOG_DAEMON);
+  syslog(LOG_INFO, "starting...\n");
+
   while (running) {
     thread_arg = malloc(sizeof(*thread_arg));
-    if (thread_arg == NULL) {
-      warnx("malloc() failed");
-      break;
-    }
+    if (thread_arg == NULL)
+      log_error_break("%s", "malloc() failed");
 
     thread_arg->addr_len = sizeof(thread_arg->addr);
     thread_arg->socket = accept(listen_socket, &thread_arg->addr,
                                 &thread_arg->addr_len);
 
     if (thread_arg->socket < 0) {
-      if (errno != EINTR) {
-        warn("accept()");
-        break;
-      }
+      if (errno != EINTR)
+        log_error_break("accept(): %s", strerror(errno));
+
       free(thread_arg);
       continue;
     }
 
     res = pthread_create(&thread, &thread_attr, &client_worker, thread_arg);
-    if (res != 0) {
-      warnx("pthread_create(): %s", strerror(res));
-      break;
-    }
+    if (res != 0)
+      log_error_break("pthread_create(): %s", strerror(res));
   }
 
-  running = 0;
+  syslog(LOG_INFO, "waiting for I/O workers...\n");
   join_io_workers();
+
+  syslog(LOG_INFO, "exiting...\n");
+  closelog();
 
   return 0;
 }
