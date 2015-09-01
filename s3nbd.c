@@ -133,6 +133,8 @@ int fetch_chunk (char *name, int fd)
       if (write_all(fd, buffer, sizeof(buffer)) != 0)
         goto ERROR1;
     }
+
+    result = 0;
   } else {
     for (i = 0; i < CHUNKSIZE/sizeof(buffer); i++) {
       if (read_all(store_fd, buffer, sizeof(buffer)) != 0)
@@ -141,14 +143,14 @@ int fetch_chunk (char *name, int fd)
       if (write_all(fd, buffer, sizeof(buffer)) != 0)
         goto ERROR2;
     }
-  }
 
-  result = 0;
+    result = 0;
 
 ERROR2:
-  if (close(store_fd) != 0) {
-    logerr("close(): %s", strerror(errno));
-    result = -1;
+    if (close(store_fd) != 0) {
+      logerr("close(): %s", strerror(errno));
+      result = -1;
+    }
   }
 
 ERROR1:
@@ -261,33 +263,50 @@ int io_open_chunk (int cachedir_fd, uint64_t chunk_no,
     if (io_lock_chunk(fd, F_RDLCK, start_offs, end_offs) != 0)
       goto ERROR1;
 
-    if (fstatat(cachedir_fd, name, &st, 0) == 0)
+    if (fstatat(cachedir_fd, name, &st, 0) != 0) {
+      if (errno != ENOENT) {
+        logerr("fstatat(): %s", strerror(errno));
+        goto ERROR1;
+      }
+
+      if (close(fd) != 0) {
+        logerr("close(): %s", strerror(errno));
+        goto ERROR;
+      }
+
+      continue;
+    }
+
+    if (st.st_size == CHUNKSIZE)
       break;
 
-    if (errno != ENOENT) {
-      logerr("fstatat(): %s", strerror(errno));
+    if (io_lock_chunk(fd, F_UNLCK, start_offs, end_offs) != 0)
       goto ERROR1;
-    }
 
-    if (close(fd) != 0) {
-      logerr("close(): %s", strerror(errno));
-      goto ERROR;
-    }
-
-    continue;
-  }
-
-  if (st.st_size != CHUNKSIZE) {
     if (io_lock_chunk(fd, F_WRLCK, 0, CHUNKSIZE) != 0)
       goto ERROR1;
 
     if (fstatat(cachedir_fd, name, &st, 0) != 0) {
-      logerr("fstatat(): %s", strerror(errno));
-      goto ERROR1;
+      if (errno != ENOENT) {
+        logerr("fstatat(): %s", strerror(errno));
+        goto ERROR1;
+      }
+
+      if (close(fd) != 0) {
+        logerr("close(): %s", strerror(errno));
+        goto ERROR;
+      }
+
+      continue;
     }
 
-    if ((st.st_size != CHUNKSIZE) && (fetch_chunk(name, fd) != 0))
+    if (st.st_size == CHUNKSIZE)
+      break;
+
+    if (fetch_chunk(name, fd) != 0)
       goto ERROR1;
+
+    break;
   }
 
   if (lseek(fd, start_offs, SEEK_SET) == (off_t) -1) {
@@ -323,7 +342,8 @@ int io_read_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
   result = 0;
 
 ERROR1:
-  close(fd);
+  if (close(fd) != 0)
+    logerr("close(): %s", strerror(errno));
 
 ERROR:
   return result;
@@ -374,7 +394,8 @@ int io_write_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
   result = 0;
 
 ERROR1:
-  close(fd);
+  if (close(fd) != 0)
+    logerr("close(): %s", strerror(errno));
 
 ERROR:
   return result;
@@ -646,9 +667,16 @@ int nbd_handshake (int socket, char *devicename, char *clientname)
 
 struct io_thread_arg *find_free_io_worker ()
 {
-  int res, i = 0;
+  int res;
+  unsigned int i, round;
+  struct timespec holdon = { .tv_sec = 0, .tv_nsec = 500 };
 
-  for (;;) {
+  for (round = 0;; round++) {
+    if (round > 10000)
+      nanosleep(&holdon, NULL);
+
+    i = round % num_io_threads;
+
     res = pthread_mutex_trylock(&io_threads[i].wakeup_mtx);
     if (res == EBUSY)
       continue;
@@ -658,18 +686,13 @@ struct io_thread_arg *find_free_io_worker ()
       return NULL;
     }
 
-    if (!io_threads[i].busy) {
-      io_threads[i].busy = 1;
+    if (!io_threads[i].busy)
       return &io_threads[i];
-    }
 
     if ((res = pthread_mutex_unlock(&io_threads[i].wakeup_mtx)) != 0) {
       logerr("pthread_mutex_unlock(): %s", strerror(res));
       return NULL;
     }
-
-    if (++i >= num_io_threads)
-      i = 0;
   }
 }
 
@@ -767,11 +790,10 @@ int client_worker_loop (struct client_thread_arg *arg)
     goto ERROR1;
   }
 
+  slot->busy = 1;
   result = 0;
 
 ERROR1:
-  slot->busy = 0;
-
   if ((res = pthread_mutex_unlock(&slot->wakeup_mtx)) != 0) {
     logerr("pthread_mutex_unlock(): %s", strerror(res));
     result = -1;
