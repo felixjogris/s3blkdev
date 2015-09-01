@@ -178,13 +178,13 @@ size_t read_cache_dir (int dir_fd, struct chunk_entry **chunks)
   return num_chunks;
 }
 
-int compare_atimes (const void *a0, const void *b0)
+int compare_reverse_atimes (const void *a0, const void *b0)
 {
   struct chunk_entry *a = (struct chunk_entry*) a0;
   struct chunk_entry *b = (struct chunk_entry*) b0;
 
   if (a->atime == b->atime) return 0;
-  return (a->atime < b->atime ? -1 : 1);
+  return (a->atime > b->atime ? -1 : 1);
 }
 
 int main ()
@@ -195,7 +195,7 @@ int main ()
 
   dir_fd = open_cache_dir("/var/tmp/s3nbd");
   num_chunks = read_cache_dir(dir_fd, &chunks);
-  qsort(chunks, num_chunks, sizeof(chunks[0]), compare_atimes);
+  qsort(chunks, num_chunks, sizeof(chunks[0]), compare_reverse_atimes);
 
   for (i = 0; i < num_chunks; i++)
     syncer_sync_chunk(dir_fd, chunks[i].name);
