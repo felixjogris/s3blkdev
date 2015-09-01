@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <stdio.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <err.h>
@@ -8,33 +9,104 @@
 
 #include "s3nbd.h"
 
-int main (int argc, char **argv)
+char *lock_type_to_string (int type)
 {
-  int fd;
+  switch (type) {
+    case F_RDLCK: return "F_RDLCK";
+    case F_WRLCK: return "F_WRLCK";
+    default:      return "<UNKNOWN>";
+  }
+}
+
+char *lock_whence_to_string (int whence)
+{
+  switch (whence) {
+    case SEEK_SET: return "SEEK_SET";
+    case SEEK_CUR: return "SEEK_CUR";
+    case SEEK_END: return "SEEK_END";
+    default :      return "<UNKNOWN>";
+  }
+}
+
+int do_lock (int fd, int cmd, int type, off_t start, off_t end)
+{
+  int result;
   struct flock flk;
-  struct stat st;
-  char buf[16];
 
-  if (argc != 5) errx(1, "usage: lock_chunk <r|w> <start> <end> /path/to/chunk");
-
-  fd = open(argv[4], O_RDWR);
-  if (fd < 0) err(1, "open()");
-
-  flk.l_type = (argv[1][0] == 'r' ? F_RDLCK : F_WRLCK);
+  flk.l_type = type;
   flk.l_whence = SEEK_SET;
-  flk.l_start = atol(argv[2]);
-  flk.l_len = atol(argv[3]);
+  flk.l_start = start;
+  flk.l_len = end - start;
   flk.l_pid = 0;
 
-  if (fcntl(fd, F_OFD_SETLK, &flk) != 0)
-    err(1, "fcntl()");
+  if ((result = fcntl(fd, cmd, &flk)) != 0)
+    warn("fcntl()");
 
-  if (stat(argv[4], &st) != 0)
-    warn("stat()");
+  if ((cmd == F_OFD_GETLK) && (flk.l_type != F_UNLCK)) {
+    printf("At least one lock is being held:\n\n"
+           "Type:   %s\n"
+           "Whence: %s\n"
+           "Start:  %li\n"
+           "Length: %li\n"
+           "PID:    %i\n\n",
+            lock_type_to_string(flk.l_type),
+            lock_whence_to_string(flk.l_whence),
+            flk.l_start, flk.l_len, flk.l_pid);
+  }
+
+  return result;
+}
+
+int main (int argc, char **argv)
+{
+  int fd, i, type, cmd;
+  struct stat st;
+  char buf[2], *chunk;
+  off_t start, end;
+
+  if (argc != 6)
+    errx(1, "Usage: locktool <g|l|w> <r|w> <start> <end> /path/to/chunk");
+
+  switch (argv[1][0]) {
+    case 'l': cmd = F_OFD_SETLK;  break;
+    case 'w': cmd = F_OFD_SETLKW; break;
+    default:  cmd = F_OFD_GETLK;  break;
+  }
+  type = (argv[2][0] == 'w' ? F_WRLCK : F_RDLCK);
+  start = atol(argv[3]);
+  end = atol(argv[4]);
+  chunk = argv[5];
+  
+  fd = open(chunk, O_RDWR);
+  if (fd < 0)
+    err(1, "open(): %s", chunk);
+
+  if (stat(chunk, &st) != 0)
+    warn("stat(): %s", chunk);
   else if (st.st_size != CHUNKSIZE)
     warnx("filesize != CHUNKSIZE");
 
-  read(0, buf, sizeof(buf));
+  switch (cmd) {
+    case F_OFD_SETLKW:
+      do_lock(fd, F_OFD_GETLK, type, start, end);
+      puts("Waiting for lock...");
+      /* fall-thru */
+
+    case F_OFD_SETLK:
+      if (do_lock(fd, cmd, type, start, end) != 0)
+        do_lock(fd, F_OFD_GETLK, type, start, end);
+      else {
+        printf("Acquired %s lock! Press [Enter] to release...\n",
+               type == F_WRLCK ? "write" : "read");
+        i = read(0, buf, sizeof(buf));
+        i = i;
+      }
+      break;
+
+    default:
+      do_lock(fd, F_OFD_GETLK, type, start, end);
+      break;
+  }
 
   return 0;
 }
