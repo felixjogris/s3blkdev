@@ -101,6 +101,7 @@ void syncer_sync_chunk (int dir_fd, char *name, int evict)
       goto ERROR3;
     }
     printf("evicted %s\n", name);
+    *name = '\0';
   }
 
 ERROR3:
@@ -232,7 +233,8 @@ int main (int argc, char **argv)
     for (i = 0; (i < num_chunks) && eviction_needed(dir_fd, min_used_pct); i++)
       syncer_sync_chunk(dir_fd, chunks[i].name, 1);
     for (i = 0; (i < num_chunks) && eviction_needed(dir_fd, min_used_pct); i++)
-      syncer_sync_chunk(dir_fd, chunks[i].name, 2);
+      if (chunks[i].name[0] != '\0')
+        syncer_sync_chunk(dir_fd, chunks[i].name, 2);
   }
 
   free(chunks);
