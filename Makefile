@@ -4,10 +4,10 @@ LIBS=-lpthread
 
 all:	s3nbd lock_chunk
 
-s3nbd:	s3nbd.c
+s3nbd:	s3nbd.c s3nbd.h
 	$(CC) $(CFLAGS) $(LDFLAGS) $(LIBS) -o $@ $<
 
-lock_chunk:	lock_chunk.c
+lock_chunk:	lock_chunk.c s3nbd.h
 	$(CC) $(CFLAGS) $(LDFLAGS) $(LIBS) -o $@ $<
 
 test:	test.c

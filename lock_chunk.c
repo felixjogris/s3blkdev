@@ -6,6 +6,8 @@
 #define __USE_GNU
 #include <fcntl.h>
 
+#include "s3nbd.h"
+
 int main (int argc, char **argv)
 {
   int fd;
@@ -29,7 +31,7 @@ int main (int argc, char **argv)
 
   if (stat(argv[4], &st) != 0)
     warn("stat()");
-  else if (st.st_size != 8*1024*1024)
+  else if (st.st_size != CHUNKSIZE)
     warnx("filesize != CHUNKSIZE");
 
   read(0, buf, sizeof(buf));

@@ -19,10 +19,10 @@
 #include <fcntl.h>
 #include <pthread.h>
 
+#include "s3nbd.h"
+
 #define logerr(fmt, params ...) syslog(LOG_ERR, "%s [%s:%i]: " fmt "\n", \
   __FUNCTION__, __FILE__, __LINE__, ## params)
-
-#define CHUNKSIZE (8 * 1024 * 1024)
 
 #define NBD_BUFSIZE 1024
 #define NBD_FLAG_FIXED_NEWSTYLE 1
@@ -109,19 +109,56 @@ ssize_t write_all (int fd, const void *buffer, size_t len)
   return 0;
 }
 
+/* TODO */
 int fetch_chunk (char *name, int fd)
 {
+  int storedir_fd, store_fd, result = -1;
   unsigned int i;
   char buffer[4096];
 
-  name = name;
-  memset(buffer, 0, sizeof(buffer));
+  if ((storedir_fd = open("/var/tmp/s3nbd2", O_RDONLY|O_DIRECTORY)) < 0) {
+    logerr("open(): %s", strerror(errno));
+    goto ERROR;
+  }
 
-  for (i = 0; i < CHUNKSIZE/sizeof(buffer); i++)
-    if (write_all(fd, buffer, sizeof(buffer)) != 0)
-      return -1;
+  if ((store_fd = openat(storedir_fd, name, O_RDONLY)) < 0) {
+    if (errno != ENOENT) {
+      logerr("openat(): %s", strerror(errno));
+      goto ERROR1;
+    }
 
-  return 0;
+    memset(buffer, 0, sizeof(buffer));
+
+    for (i = 0; i < CHUNKSIZE/sizeof(buffer); i++) {
+      if (write_all(fd, buffer, sizeof(buffer)) != 0)
+        goto ERROR1;
+    }
+  } else {
+    for (i = 0; i < CHUNKSIZE/sizeof(buffer); i++) {
+      if (read_all(store_fd, buffer, sizeof(buffer)) != 0)
+        goto ERROR2;
+
+      if (write_all(fd, buffer, sizeof(buffer)) != 0)
+        goto ERROR2;
+    }
+  }
+
+  result = 0;
+
+ERROR2:
+  if (close(store_fd) != 0) {
+    logerr("close(): %s", strerror(errno));
+    result = -1;
+  }
+
+ERROR1:
+  if (close(storedir_fd) != 0) {
+    logerr("close(): %s", strerror(errno));
+    result = -1;
+  }
+
+ERROR:
+  return result;
 }
 
 uint64_t htonll (uint64_t u64h)
@@ -224,22 +261,31 @@ int io_open_chunk (int cachedir_fd, uint64_t chunk_no,
     if (io_lock_chunk(fd, F_RDLCK, start_offs, end_offs) != 0)
       goto ERROR1;
 
-    if (fstatat(cachedir_fd, name, &st, 0) != 0) {
-      if (close(fd) != 0)
-        logerr("close(): %s", strerror(errno));
-      continue;
+    if (fstatat(cachedir_fd, name, &st, 0) == 0)
+      break;
+
+    if (errno != ENOENT) {
+      logerr("fstatat(): %s", strerror(errno));
+      goto ERROR1;
     }
 
-    break;
+    if (close(fd) != 0) {
+      logerr("close(): %s", strerror(errno));
+      goto ERROR;
+    }
+
+    continue;
   }
 
   if (st.st_size != CHUNKSIZE) {
     if (io_lock_chunk(fd, F_WRLCK, 0, CHUNKSIZE) != 0)
       goto ERROR1;
+
     if (fstatat(cachedir_fd, name, &st, 0) != 0) {
       logerr("fstatat(): %s", strerror(errno));
       goto ERROR1;
     }
+
     if ((st.st_size != CHUNKSIZE) && (fetch_chunk(name, fd) != 0))
       goto ERROR1;
   }
