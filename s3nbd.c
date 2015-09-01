@@ -612,8 +612,10 @@ struct io_thread_arg *find_free_io_worker ()
       return NULL;
     }
 
-    if (!io_threads[i].busy)
+    if (!io_threads[i].busy) {
+      io_threads[i].busy = 1;
       return &io_threads[i];
+    }
 
     if ((res = pthread_mutex_unlock(&io_threads[i].wakeup_mtx)) != 0) {
       logerr("pthread_mutex_unlock(): %s", strerror(res));
@@ -713,7 +715,6 @@ int client_worker_loop (struct client_thread_arg *arg)
   slot->socket = arg->socket;
   slot->socket_mtx = &arg->socket_mtx;
   slot->cachedir_fd = arg->cachedir_fd;
-  slot->busy = 1;
 
   if ((res = pthread_cond_signal(&slot->wakeup_cond)) != 0) {
     logerr("pthread_cond_signal(): %s", strerror(res));
@@ -723,6 +724,8 @@ int client_worker_loop (struct client_thread_arg *arg)
   result = 0;
 
 ERROR1:
+  slot->busy = 0;
+
   if ((res = pthread_mutex_unlock(&slot->wakeup_mtx)) != 0) {
     logerr("pthread_mutex_unlock(): %s", strerror(res));
     result = -1;
