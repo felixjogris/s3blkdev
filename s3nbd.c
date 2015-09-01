@@ -227,7 +227,6 @@ int io_lock_chunk (int fd, short int type, uint64_t start_offs,
                    uint64_t end_offs)
 {
   struct flock flk;
-  int result;
 
   flk.l_type = type;
   flk.l_whence = SEEK_SET;
@@ -235,8 +234,7 @@ int io_lock_chunk (int fd, short int type, uint64_t start_offs,
   flk.l_len = end_offs - start_offs;
   flk.l_pid = 0;
 
-  result = fcntl(fd, F_OFD_SETLKW, &flk);
-  if (result != 0) {
+  if (fcntl(fd, F_OFD_SETLKW, &flk) != 0) {
     logerr("fcntl(): %s", strerror(errno));
     return -1;
   }
