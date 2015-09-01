@@ -65,18 +65,17 @@ void syncer_sync_chunk (int dir_fd, char *name, int evict)
   }
 
   store_fd = openat(storedir_fd, name, O_RDONLY);
-  if (store_fd >= 0) {
-    if (read(store_fd, buf2, sizeof(buf2)) != sizeof(buf2)) {
-      warn("read()");
-      goto ERROR3;
-    }
-    equal = (memcmp(buf1, buf2, sizeof(buf1)) == 0);
-  } else {
+  if (store_fd < 0) {
     equal = 0;
+  } else if (read(store_fd, buf2, sizeof(buf2)) != sizeof(buf2)) {
+    warn("read()");
+    goto ERROR3;
+  } else {
+    equal = (memcmp(buf1, buf2, sizeof(buf1)) == 0);
   }
 
   if (!equal && (evict != 1)) {
-    if (close(store_fd) < 0) {
+    if ((store_fd >= 0) && (close(store_fd) < 0)) {
       warn("close()");
       goto ERROR2;
     }
@@ -105,7 +104,7 @@ void syncer_sync_chunk (int dir_fd, char *name, int evict)
   }
 
 ERROR3:
-  if (close(store_fd) < 0)
+  if ((store_fd >= 0) && (close(store_fd) < 0))
     warn("close()");
 
 ERROR2:
