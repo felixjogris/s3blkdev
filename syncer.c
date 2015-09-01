@@ -7,6 +7,7 @@
 #include <err.h>
 #include <errno.h>
 #include <string.h>
+#include <sys/statfs.h>
 
 #define __USE_GNU
 #include <fcntl.h>
@@ -20,19 +21,19 @@ struct chunk_entry {
 
 char buf1[CHUNKSIZE], buf2[CHUNKSIZE];
 
-int _syncer_sync_chunk (int dir_fd, char *name, int copy)
+void syncer_sync_chunk (int dir_fd, char *name, int evict)
 {
-  int fd, storedir_fd, store_fd, flags, result = -1;
+  int fd, storedir_fd, store_fd, equal;
   struct flock flk;
   struct stat st;
 
-  fd = openat(dir_fd, name, O_RDONLY|O_NOATIME);
+  fd = openat(dir_fd, name, (evict ? O_RDWR : O_RDONLY) | O_NOATIME);
   if (fd < 0) {
     warn("open(): %s", name);
     goto ERROR;
   }
 
-  flk.l_type = F_RDLCK;
+  flk.l_type = (evict ? F_WRLCK : F_RDLCK);
   flk.l_whence = SEEK_SET;
   flk.l_start = 0;
   flk.l_len = CHUNKSIZE;
@@ -53,61 +54,69 @@ int _syncer_sync_chunk (int dir_fd, char *name, int copy)
     goto ERROR1;
   }
 
+  if (read(fd, buf1, sizeof(buf1)) != sizeof(buf1)) {
+    warn("read()");
+    goto ERROR1;
+  }
+
   if ((storedir_fd = open("/var/tmp/s3nbd2", O_RDONLY|O_DIRECTORY)) < 0) {
     warn("open()");
     goto ERROR1;
   }
 
-  flags = (copy ? O_CREAT|O_RDWR : O_RDONLY);
-  store_fd = openat(storedir_fd, name, flags, S_IRUSR|S_IWUSR);
-  if (store_fd < 0) {
-    if (copy)
-      warn("openat()");
-    else
-      result = 0;
-    goto ERROR2;
-  }
-
-  if (read(fd, buf1, sizeof(buf1)) != sizeof(buf1)) {
-    warn("read()");
-    goto ERROR3;
-  }
-
-  if (copy) {
-    if (write(store_fd, buf1, sizeof(buf1)) != sizeof(buf1)) {
-      warn("write()");
-      goto ERROR3;
-    }
-    result = 0;
-    printf("synced %s\n", name);
-  } else {
+  store_fd = openat(storedir_fd, name, O_RDONLY);
+  if (store_fd >= 0) {
     if (read(store_fd, buf2, sizeof(buf2)) != sizeof(buf2)) {
       warn("read()");
       goto ERROR3;
     }
-    result = (memcmp(buf1, buf2, sizeof(buf1)) == 0);
+    equal = (memcmp(buf1, buf2, sizeof(buf1)) == 0);
+  } else {
+    equal = 0;
+  }
+
+  if (!equal && (evict != 1)) {
+    if (close(store_fd) < 0) {
+      warn("close()");
+      goto ERROR2;
+    }
+
+    store_fd = openat(storedir_fd, name, O_WRONLY|O_CREAT, S_IRUSR|S_IWUSR);
+    if (store_fd < 0) {
+      warn("openat()");
+      goto ERROR2;
+    }
+
+    if (write(store_fd, buf1, sizeof(buf1)) != sizeof(buf1)) {
+      warn("write()");
+      goto ERROR3;
+    }
+
+    printf("synced %s\n", name);
+  }
+
+  if ((equal && (evict == 1)) || (evict == 2)) {
+    if (unlinkat(dir_fd, name, 0) != 0) {
+      warn("unlinkat()");
+      goto ERROR3;
+    }
+    printf("evicted %s\n", name);
   }
 
 ERROR3:
-  if (close(store_fd) < 0) {
+  if (close(store_fd) < 0)
     warn("close()");
-    result = -1;
-  }
 
 ERROR2:
-  if (close(storedir_fd) < 0) {
+  if (close(storedir_fd) < 0)
     warn("close()");
-    result = -1;
-  }
 
 ERROR1:
-  if (close(fd) < 0) {
+  if (close(fd) < 0)
     warn("close(): %s", name);
-    result = -1;
-  }
 
 ERROR:
-  return result;
+  return;
 }
 
 int open_cache_dir (char *dirname)
@@ -119,16 +128,6 @@ int open_cache_dir (char *dirname)
     err(1, "open()");
 
   return dir_fd;
-}
-
-int syncer_is_chunk_dirty (int dir_fd, char *name)
-{
-  return (_syncer_sync_chunk(dir_fd, name, 0) == 0);
-}
-
-void syncer_sync_chunk (int dir_fd, char *name)
-{
-  _syncer_sync_chunk(dir_fd, name, 1);
 }
 
 size_t read_cache_dir (int dir_fd, struct chunk_entry **chunks)
@@ -156,9 +155,6 @@ size_t read_cache_dir (int dir_fd, struct chunk_entry **chunks)
     if (st.st_size != CHUNKSIZE)
       continue;
 
-    if (!syncer_is_chunk_dirty(dir_fd, entry->d_name))
-      continue;
-
     if (num_chunks >= size_chunks) {
       size_chunks += 4096;
       *chunks = realloc(*chunks, sizeof(chunks[0]) * size_chunks);
@@ -178,27 +174,66 @@ size_t read_cache_dir (int dir_fd, struct chunk_entry **chunks)
   return num_chunks;
 }
 
-int compare_reverse_atimes (const void *a0, const void *b0)
+int eviction_needed (int dir_fd, unsigned int max_used_pct)
+{
+  struct statfs fs;
+  unsigned int min_free_pct = 100 - max_used_pct;
+
+  if (fstatfs(dir_fd, &fs) != 0) {
+    warn("fstatfs()");
+    return 0;
+  }
+
+  return ((fs.f_bavail * 100 / fs.f_blocks < min_free_pct) ||
+          (fs.f_ffree * 100 / fs.f_files < min_free_pct));
+}
+
+int compare_atimes (const void *a0, const void *b0)
 {
   struct chunk_entry *a = (struct chunk_entry*) a0;
   struct chunk_entry *b = (struct chunk_entry*) b0;
 
   if (a->atime == b->atime) return 0;
-  return (a->atime > b->atime ? -1 : 1);
+  return (a->atime < b->atime ? -1 : 1);
 }
 
-int main ()
+int main (int argc, char **argv)
 {
   int dir_fd;
   size_t num_chunks, i;
+  long l;
   struct chunk_entry *chunks = NULL;
+  enum { SYNCER, EVICTOR } mode;
+  unsigned int min_used_pct, max_used_pct;
+
+  switch (argc) {
+    case 1:
+      mode = SYNCER;
+      break;
+    case 3:
+      mode = EVICTOR;
+      max_used_pct = atoi(argv[1]);
+      min_used_pct = atoi(argv[2]);
+      if ((min_used_pct <= max_used_pct) && (max_used_pct <= 100))
+        break;
+      /* fall-thru */
+    default:
+      errx(1, "Usage: syncer [<max_used_pct> <min_used_pct>]");
+  }
 
   dir_fd = open_cache_dir("/var/tmp/s3nbd");
   num_chunks = read_cache_dir(dir_fd, &chunks);
-  qsort(chunks, num_chunks, sizeof(chunks[0]), compare_reverse_atimes);
+  qsort(chunks, num_chunks, sizeof(chunks[0]), compare_atimes);
 
-  for (i = 0; i < num_chunks; i++)
-    syncer_sync_chunk(dir_fd, chunks[i].name);
+  if (mode == SYNCER) {
+    for (l = num_chunks - 1; l >= 0; l--)
+      syncer_sync_chunk(dir_fd, chunks[l].name, 0);
+  } else if (eviction_needed(dir_fd, max_used_pct)) {
+    for (i = 0; (i < num_chunks) && eviction_needed(dir_fd, min_used_pct); i++)
+      syncer_sync_chunk(dir_fd, chunks[i].name, 1);
+    for (i = 0; (i < num_chunks) && eviction_needed(dir_fd, min_used_pct); i++)
+      syncer_sync_chunk(dir_fd, chunks[i].name, 2);
+  }
 
   free(chunks);
   close(dir_fd);
