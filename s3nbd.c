@@ -77,7 +77,7 @@ struct io_thread_arg {
 };
 
 int running = 1;
-int num_io_threads = 16;
+int num_io_threads = 4;
 struct io_thread_arg io_threads[128];
 
 ssize_t read_all (int fd, void *buffer, size_t len)
@@ -493,7 +493,7 @@ int nbd_send_device_info (int socket, char *devicename, uint32_t flags)
   if (strcmp(devicename, "tehdisk"))
     return -1;
 
-  devsize = 1100 * 1024 * 1024;
+  devsize = 100 * 1024 * 1024;
   devsize = htonll(devsize);
 
   if (write_all(socket, &devsize, sizeof(devsize)) != 0)
@@ -612,17 +612,15 @@ struct io_thread_arg *find_free_io_worker ()
       return NULL;
     }
 
-    if (!io_threads[i].busy) {
-      io_threads[i].busy = 1;
+    if (!io_threads[i].busy)
       return &io_threads[i];
-    }
-      
+
     if ((res = pthread_mutex_unlock(&io_threads[i].wakeup_mtx)) != 0) {
       logerr("pthread_mutex_unlock(): %s", strerror(res));
       return NULL;
     }
 
-    if (i++ >= num_io_threads)
+    if (++i >= num_io_threads)
       i = 0;
   }
 }
@@ -715,6 +713,7 @@ int client_worker_loop (struct client_thread_arg *arg)
   slot->socket = arg->socket;
   slot->socket_mtx = &arg->socket_mtx;
   slot->cachedir_fd = arg->cachedir_fd;
+  slot->busy = 1;
 
   if ((res = pthread_cond_signal(&slot->wakeup_cond)) != 0) {
     logerr("pthread_cond_signal(): %s", strerror(res));
