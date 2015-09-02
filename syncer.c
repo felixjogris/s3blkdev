@@ -27,17 +27,23 @@ struct chunk_entry {
 
 char buf1[CHUNKSIZE], buf2[CHUNKSIZE];
 
-static void sync_chunk (char *devicename, int dir_fd, char *name, int evict)
+static void sync_chunk (struct device *dev, char *name, int evict)
 {
-  int fd, storedir_fd, store_fd, equal;
+  int dir_fd, fd, storedir_fd, store_fd, equal;
   struct flock flk;
   struct stat st;
-  char tmpbuf[PATH_MAX];
+  char sdpath[PATH_MAX];
+
+  dir_fd = open(dev->cachedir, O_RDONLY|O_DIRECTORY);
+  if (dir_fd < 0) {
+    logwarn("open(): %s", dev->cachedir);
+    goto ERROR;
+  }
 
   fd = openat(dir_fd, name, (evict ? O_RDWR : O_RDONLY) | O_NOATIME);
   if (fd < 0) {
-    logwarn("open(): %s", name);
-    goto ERROR;
+    logwarn("open(): %s/%s", dev->cachedir, name);
+    goto ERROR1;
   }
 
   flk.l_type = (evict ? F_WRLCK : F_RDLCK);
@@ -47,57 +53,57 @@ static void sync_chunk (char *devicename, int dir_fd, char *name, int evict)
   flk.l_pid = 0;
 
   if (fcntl(fd, F_OFD_SETLK, &flk) != 0) {
-    logwarn("cannot lock %s", name);
-    goto ERROR1;
+    logwarn("cannot lock %s/%s", dev->cachedir, name);
+    goto ERROR2;
   }
 
   if (fstatat(dir_fd, name, &st, 0) != 0) {
-    logwarn("fstatat(): %s", name);
-    goto ERROR1;
+    logwarn("fstatat(): %s/%s", dev->cachedir, name);
+    goto ERROR2;
   }
 
   if (st.st_size != CHUNKSIZE) {
-    logwarnx("%s: filesize != CHUNKSIZE", name);
-    goto ERROR1;
+    logwarnx("%s/%s: filesize != CHUNKSIZE", dev->cachedir, name);
+    goto ERROR2;
   }
 
   if (read(fd, buf1, sizeof(buf1)) != sizeof(buf1)) {
-    logwarn("read(): %s", name);
-    goto ERROR1;
+    logwarn("read(): %s/%s", dev->cachedir, name);
+    goto ERROR2;
   }
 
 /* TODO */
-  snprintf(tmpbuf, sizeof(tmpbuf), "/var/tmp/%s.store", devicename);
-  if ((storedir_fd = open(tmpbuf, O_RDONLY|O_DIRECTORY)) < 0) {
-    logwarn("open(): %s", tmpbuf);
-    goto ERROR1;
+  snprintf(sdpath, sizeof(sdpath), "/var/tmp/%s.store", dev->name);
+  if ((storedir_fd = open(sdpath, O_RDONLY|O_DIRECTORY)) < 0) {
+    logwarn("open(): %s", sdpath);
+    goto ERROR2;
   }
 
   store_fd = openat(storedir_fd, name, O_RDONLY);
   if (store_fd < 0) {
     equal = 0;
   } else if (read(store_fd, buf2, sizeof(buf2)) != sizeof(buf2)) {
-    logwarn("read(): %s", name);
-    goto ERROR3;
+    logwarn("read(): %s/%s", sdpath, name);
+    goto ERROR4;
   } else {
     equal = (memcmp(buf1, buf2, sizeof(buf1)) == 0);
   }
 
   if (!equal && (evict != 1)) {
     if ((store_fd >= 0) && (close(store_fd) < 0)) {
-      logwarn("close()");
-      goto ERROR2;
+      logwarn("close(): %s/%s", sdpath, name);
+      goto ERROR3;
     }
 
     store_fd = openat(storedir_fd, name, O_WRONLY|O_CREAT, S_IRUSR|S_IWUSR);
     if (store_fd < 0) {
-      logwarn("openat(): %s", name);
-      goto ERROR2;
+      logwarn("openat(): %s/%s", sdpath, name);
+      goto ERROR3;
     }
 
     if (write(store_fd, buf1, sizeof(buf1)) != sizeof(buf1)) {
-      logwarn("write(): %s", name);
-      goto ERROR3;
+      logwarn("write(): %s/%s", sdpath, name);
+      goto ERROR4;
     }
 
     printf("synced %s\n", name);
@@ -105,95 +111,100 @@ static void sync_chunk (char *devicename, int dir_fd, char *name, int evict)
 
   if ((equal && (evict == 1)) || (evict == 2)) {
     if (unlinkat(dir_fd, name, 0) != 0) {
-      logwarn("unlinkat(): %s", name);
-      goto ERROR3;
+      logwarn("unlinkat(): %s/%s", dev->cachedir, name);
+      goto ERROR4;
     }
     printf("evicted %s\n", name);
     *name = '\0';
   }
 
-ERROR3:
+ERROR4:
   if ((store_fd >= 0) && (close(store_fd) < 0))
-    logwarn("close()");
+    logwarn("close(): %s/%s", sdpath, name);
+
+ERROR3:
+  if (close(storedir_fd) < 0)
+    logwarn("close(): %s", sdpath);
 
 ERROR2:
-  if (close(storedir_fd) < 0)
-    logwarn("close()");
+  if (close(fd) < 0)
+    logwarn("close(): %s/%s", dev->cachedir, name);
 
 ERROR1:
-  if (close(fd) < 0)
-    logwarn("close(): %s", name);
+  if (close(dir_fd) < 0)
+    logwarn("close(): %s", dev->cachedir);
 
 ERROR:
   return;
 }
 
-static int open_cache_dir (char *dirname)
-{
-  int dir_fd;
-
-  dir_fd = open(dirname, O_RDONLY|O_DIRECTORY);
-  if (dir_fd < 0)
-    logwarn("open(): %s", dirname);
-
-  return dir_fd;
-}
-
-static size_t read_cache_dir (int dir_fd, struct chunk_entry **chunks)
+static int read_cache_dir (char *cachedir, struct chunk_entry **chunks,
+                           size_t *num_chunks)
 {
   DIR *dir;
   struct dirent *entry;
   struct stat st;
-  size_t num_chunks = 0, size_chunks = 0;
+  size_t size_chunks = 0;
+  int result = -1;
 
-  dir = fdopendir(dir_fd);
+  dir = opendir(cachedir);
   if (dir == NULL) {
-    logwarn("fdopendir()");
-    return 0;
+    logwarn("opendir(): %s", cachedir);
+    goto ERROR;
   }
 
-  for (errno = 0; (entry = readdir(dir)) != NULL; errno = 0) {
+  for (*num_chunks = 0, errno = 0; (entry = readdir(dir)) != NULL; errno = 0) {
     if ((entry->d_type != DT_REG) || (strlen(entry->d_name) != 16))
       continue;
 
-    if (fstatat(dir_fd, entry->d_name, &st, 0) != 0) {
+    if (fstatat(dirfd(dir), entry->d_name, &st, 0) != 0) {
       if (errno != ENOENT) {
-        logwarn("fstatat(): %s", entry->d_name);
-        return 0;
+        logwarn("fstatat(): %s/%s", cachedir, entry->d_name);
+        goto ERROR1;
       }
     }
 
     if (st.st_size != CHUNKSIZE)
       continue;
 
-    if (num_chunks >= size_chunks) {
+    if (*num_chunks >= size_chunks) {
       size_chunks += 4096;
       *chunks = realloc(*chunks, sizeof(chunks[0]) * size_chunks);
       if (*chunks == NULL)
         errx(1, "realloc() failed");
     }
 
-    (*chunks)[num_chunks].atime = st.st_atim.tv_sec;
-    strncpy((*chunks)[num_chunks].name, entry->d_name,
+    (*chunks)[*num_chunks].atime = st.st_atim.tv_sec;
+    strncpy((*chunks)[*num_chunks].name, entry->d_name,
             sizeof((*chunks)[0].name));
-    num_chunks++;
+
+    *num_chunks += 1;
   }
+
+  result = 0;
 
   if (errno != 0) {
-    logwarn("readdir()");
-    return 0;
+    logwarn("readdir(): %s", cachedir);
+    result = -1;
   }
 
-  return num_chunks;
+ERROR1:
+  if (closedir(dir) != 0) {
+    logwarn("closedir(): %s", cachedir);
+    result = -1;
+  }
+
+ERROR:
+  return result;
 }
 
-static int eviction_needed (int dir_fd, unsigned int max_used_pct)
+static int eviction_needed (char *cachedir, unsigned int max_used_pct)
 {
   struct statfs fs;
   unsigned int min_free_pct = 100 - max_used_pct;
 
-  if (fstatfs(dir_fd, &fs) != 0) {
-    logwarn("fstatfs()");
+  if (statfs(cachedir, &fs) != 0) {
+    logwarn("statfs(): %s", cachedir);
     return 0;
   }
 
@@ -227,14 +238,15 @@ static void show_help ()
 
 int main (int argc, char **argv)
 {
-  int dir_fd, res;
+  int res;
   size_t num_chunks, i;
   long l;
   struct chunk_entry *chunks = NULL;
   enum { SYNCER, EVICTOR } mode;
-  unsigned int min_used_pct, max_used_pct, errline, devnum;
+  unsigned int min_used_pct = 100, max_used_pct = 100, errline, devnum;
   char *configfile = DEFAULT_CONFIGFILE, *errstr;
   struct config cfg;
+  struct device *dev;
 
   while ((res = getopt(argc, argv, "c:h")) != -1) {
     switch (res) {
@@ -264,29 +276,39 @@ int main (int argc, char **argv)
          configfile, errstr, errline);
 
   for (devnum = 0; devnum < cfg.num_devices; devnum++) {
-    if ((dir_fd = open_cache_dir(cfg.devs[devnum].cachedir)) < 0)
+    dev = &cfg.devs[devnum];
+
+    if (read_cache_dir(dev->cachedir, &chunks, &num_chunks) != 0)
       continue;
 
-    num_chunks = read_cache_dir(dir_fd, &chunks);
     qsort(chunks, num_chunks, sizeof(chunks[0]), compare_atimes);
 
     printf("cachedir %s contains %lu chunks\n",
-           cfg.devs[devnum].cachedir,  num_chunks);
+           dev->cachedir,  num_chunks);
 
     if (mode == SYNCER) {
       for (l = num_chunks - 1; l >= 0; l--)
-        sync_chunk(cfg.devs[devnum].name, dir_fd, chunks[l].name, 0);
-    } else if (eviction_needed(dir_fd, max_used_pct)) {
-      for (i = 0; (i < num_chunks) && eviction_needed(dir_fd, min_used_pct); i++)
-        sync_chunk(cfg.devs[devnum].name, dir_fd, chunks[i].name, 1);
+        sync_chunk(dev, chunks[l].name, 0);
+    } else if (eviction_needed(dev->cachedir, max_used_pct)) {
+      for (i = 0; i < num_chunks; i++) {
+        if (eviction_needed(dev->cachedir, min_used_pct))
+          sync_chunk(dev, chunks[i].name, 1);
+        else
+          break;
+      }
 
-      for (i = 0; (i < num_chunks) && eviction_needed(dir_fd, min_used_pct); i++)
-        if (chunks[i].name[0] != '\0')
-          sync_chunk(cfg.devs[devnum].name, dir_fd, chunks[i].name, 2);
+      for (i = 0; i < num_chunks; i++) {
+        if (chunks[i].name[0] == '\0')
+          continue;
+        if (eviction_needed(dev->cachedir, min_used_pct))
+          sync_chunk(dev, chunks[i].name, 2);
+        else
+          break;
+      }
     }
 
     free(chunks);
-    close(dir_fd);
+    chunks = NULL;
   }
 
   return 0;
