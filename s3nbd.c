@@ -77,6 +77,7 @@ struct io_thread_arg {
 };
 
 int running = 1;
+int reload_config = 0;
 struct io_thread_arg io_threads[128];
 unsigned short num_io_threads;
 struct config cfg;
@@ -882,24 +883,37 @@ void sigterm_handler (int sig __attribute__((unused)))
   running = 0;
 }
 
+void sighup_handler (int sig __attribute__((unused)))
+{
+  syslog(LOG_INFO, "SIGHUP received, reloading configuration...\n");
+  reload_config = 1;
+}
+
+void setup_signal (int sig, void (*handler)(int))
+{
+  struct sigaction sa;
+
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = handler;
+  if (sigaction(sig, &sa, NULL) != 0)
+    err(1, "signal()");
+}
+
 void setup_signals ()
 {
   sigset_t sigset;
-  struct sigaction sa;
 
   if (sigfillset(&sigset) != 0)
     err(1, "sigfillset()");
 
-  if (sigdelset(&sigset, SIGTERM) != 0)
+  if ((sigdelset(&sigset, SIGTERM) != 0) || (sigdelset(&sigset, SIGHUP) != 0))
     err(1, "sigdelset()");
 
   if (pthread_sigmask(SIG_SETMASK, &sigset, NULL) != 0)
     err(1, "sigprocmask()");
 
-  memset(&sa, 0, sizeof(sa));
-  sa.sa_handler = sigterm_handler;
-  if (sigaction(SIGTERM, &sa, NULL) != 0)
-    err(1, "signal()");
+  setup_signal(SIGTERM, sigterm_handler);
+  setup_signal(SIGHUP, sighup_handler);
 }
 
 int create_listen_socket_inet (char *ip, char *port)
@@ -1050,7 +1064,6 @@ int main (int argc, char **argv)
   else syslog(LOG_WARNING, fmt "\n", ## params); \
 } while (0)
 
-  struct config cfg;
   char *configfile = DEFAULT_CONFIGFILE, *pidfile = NULL, *errstr;
   int foreground = 0, listen_socket, res;
   unsigned int errline;
@@ -1068,7 +1081,6 @@ int main (int argc, char **argv)
     }
   }
 
-  cfg.ctime.tv_sec = 0;
   if (load_config(configfile, &cfg, &errline, &errstr) != 0)
     errx(1, "cannot load config file %s: %s (line %i)",
          configfile, errstr, errline);
@@ -1089,6 +1101,11 @@ int main (int argc, char **argv)
   syslog(LOG_INFO, "starting...\n");
 
   while (running) {
+    if (reload_config &&
+        (load_config(configfile, &cfg, &errline, &errstr) != 0))
+      log_error("cannot reload config file %s: %s (line %i)",
+                configfile, errstr, errline);
+
     thread_arg = malloc(sizeof(*thread_arg));
     if (thread_arg == NULL) {
       log_error("%s", "malloc() failed");

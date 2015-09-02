@@ -36,25 +36,15 @@ int load_config (char *configfile, struct config *cfg,
                  unsigned int *err_line, char **errstr)
 {
   struct config newcfg;
-  struct stat st;
   FILE *fh;
   int result = -1, in_device = 0;
   char line[1024], devname[128];
 
   *err_line = 0;
 
-  if (stat(configfile, &st) != 0) {
-    *errstr = strerror(errno);
-    return -1;
-  }
-
-  if ((st.st_ctim.tv_sec == cfg->ctime.tv_sec) &&
-      (st.st_ctim.tv_nsec == cfg->ctime.tv_nsec))
-    return 1;
-
   if ((fh = fopen(configfile, "r")) == NULL) {
     *errstr = strerror(errno);
-    return -1;
+    goto ERROR;
   }
 
   memset(&newcfg, 0, sizeof(newcfg));
@@ -64,7 +54,7 @@ int load_config (char *configfile, struct config *cfg,
 
     if (is_incomplete(line)) {
       *errstr = "incomplete line (no terminating newline)";
-      goto ERROR;
+      goto ERROR1;
     }
 
     if (is_comment(line) || is_empty(line))
@@ -79,7 +69,7 @@ int load_config (char *configfile, struct config *cfg,
         in_device |= 4;
       } else {
         *errstr = "unknown device parameter";
-        goto ERROR;
+        goto ERROR1;
       }
 
       if (in_device == 7) {
@@ -97,11 +87,11 @@ int load_config (char *configfile, struct config *cfg,
     if (sscanf(line, " workers %hu", &newcfg.num_io_threads)) {
       if (newcfg.num_io_threads == 0) {
         *errstr = "number of workers must not be zero";
-        goto ERROR;
+        goto ERROR1;
       }
       if (newcfg.num_io_threads >= MAX_IO_THREADS) {
         *errstr = "number of workers too large (max. " STR(MAX_IO_THREADS) ")";
-        goto ERROR;
+        goto ERROR1;
       }
       continue;
     }
@@ -109,7 +99,7 @@ int load_config (char *configfile, struct config *cfg,
     if (sscanf(line, " fetchers %hu", &newcfg.num_s3_fetchers)) {
       if (newcfg.num_s3_fetchers == 0) {
         *errstr = "number of fetchers must not be zero";
-        goto ERROR;
+        goto ERROR1;
       }
       continue;
     }
@@ -117,7 +107,7 @@ int load_config (char *configfile, struct config *cfg,
     if (sscanf(line, " [%127[^]]", devname)) {
       if (newcfg.num_devices >= sizeof(newcfg.devs)/sizeof(newcfg.devs[0])) {
         *errstr = "too many devices";
-        goto ERROR;
+        goto ERROR1;
       }
 
       strncpy(newcfg.devs[newcfg.num_devices].name, devname,
@@ -128,21 +118,18 @@ int load_config (char *configfile, struct config *cfg,
     }
 
     *errstr = "unknown configuration directive";
-    goto ERROR;
+    goto ERROR1;
   }
 
   if (in_device) {
     *errstr = "incomplete device configuration";
-    goto ERROR;
+    goto ERROR1;
   }
 
-  newcfg.ctime.tv_sec = st.st_ctim.tv_sec;
-  newcfg.ctime.tv_nsec = st.st_ctim.tv_nsec;
   memcpy(cfg, &newcfg, sizeof(*cfg));
-  
   result = 0;
 
-ERROR:
+ERROR1:
   if (ferror(fh)) {
     *errstr = strerror(errno);
     result = -1;
@@ -153,5 +140,6 @@ ERROR:
     result = -1;
   }
 
+ERROR:
   return result;
 }

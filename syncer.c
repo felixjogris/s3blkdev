@@ -257,7 +257,6 @@ int main (int argc, char **argv)
       errx(1, "Wrong parameters. Use -h for help.");
   }
 
-  cfg.ctime.tv_sec = 0;
   if (load_config(configfile, &cfg, &errline, &errstr) != 0)
     errx(1, "cannot load config file %s: %s (line %i)",
          configfile, errstr, errline);

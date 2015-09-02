@@ -38,8 +38,6 @@ struct config {
 
   char listen[128];
   char port[8];
-
-  struct timespec ctime;
 };
 
 int load_config (char *configfile, struct config *cfg,
