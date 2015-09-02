@@ -54,6 +54,8 @@ struct client_thread_arg {
   struct sockaddr addr;
   socklen_t addr_len;
   pthread_mutex_t socket_mtx;
+  char clientname[INET6_ADDRSTRLEN + 8];
+  struct device dev;
   int cachedir_fd;
 };
 
@@ -64,6 +66,7 @@ struct io_thread_arg {
   int busy;
   int socket;
   pthread_mutex_t *socket_mtx;
+  char devicename[DEVNAME_SIZE];
   int cachedir_fd;
   struct __attribute__((packed)) {
     uint32_t magic;
@@ -112,14 +115,16 @@ static ssize_t write_all (int fd, const void *buffer, size_t len)
 }
 
 /* TODO */
-static int fetch_chunk (char *name, int fd)
+static int fetch_chunk (char *devicename, int fd, char *name)
 {
   int storedir_fd, store_fd, result = -1;
   unsigned int i;
   char buffer[4096];
 
-  if ((storedir_fd = open("/var/tmp/s3nbd2", O_RDONLY|O_DIRECTORY)) < 0) {
-    logerr("open(): %s", strerror(errno));
+  snprintf(buffer, sizeof(buffer), "/var/tmp/%s.store", devicename);
+
+  if ((storedir_fd = open(buffer, O_RDONLY|O_DIRECTORY)) < 0) {
+    logerr("open(): %s: %s", buffer, strerror(errno));
     goto ERROR;
   }
 
@@ -245,7 +250,7 @@ static int io_lock_chunk (int fd, short int type, uint64_t start_offs,
   return 0;
 }
 
-static int io_open_chunk (int cachedir_fd, uint64_t chunk_no,
+static int io_open_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
                           uint64_t start_offs, uint64_t end_offs)
 {
   char name[17];
@@ -255,7 +260,7 @@ static int io_open_chunk (int cachedir_fd, uint64_t chunk_no,
   snprintf(name, sizeof(name), "%016llx", (unsigned long long) chunk_no);
 
   for (;;) {
-    fd = openat(cachedir_fd, name, O_RDWR|O_CREAT, S_IRUSR|S_IWUSR);
+    fd = openat(arg->cachedir_fd, name, O_RDWR|O_CREAT, S_IRUSR|S_IWUSR);
     if (fd < 0) {
       logerr("openat(): %s", strerror(errno));
       goto ERROR;
@@ -264,7 +269,7 @@ static int io_open_chunk (int cachedir_fd, uint64_t chunk_no,
     if (io_lock_chunk(fd, F_RDLCK, start_offs, end_offs) != 0)
       goto ERROR1;
 
-    if (fstatat(cachedir_fd, name, &st, 0) != 0) {
+    if (fstatat(arg->cachedir_fd, name, &st, 0) != 0) {
       if (errno != ENOENT) {
         logerr("fstatat(): %s", strerror(errno));
         goto ERROR1;
@@ -287,7 +292,7 @@ static int io_open_chunk (int cachedir_fd, uint64_t chunk_no,
     if (io_lock_chunk(fd, F_WRLCK, 0, CHUNKSIZE) != 0)
       goto ERROR1;
 
-    if (fstatat(cachedir_fd, name, &st, 0) != 0) {
+    if (fstatat(arg->cachedir_fd, name, &st, 0) != 0) {
       if (errno != ENOENT) {
         logerr("fstatat(): %s", strerror(errno));
         goto ERROR1;
@@ -304,7 +309,7 @@ static int io_open_chunk (int cachedir_fd, uint64_t chunk_no,
     if (st.st_size == CHUNKSIZE)
       break;
 
-    if (fetch_chunk(name, fd) != 0)
+    if (fetch_chunk(arg->devicename, fd, name) != 0)
       goto ERROR1;
 
     break;
@@ -332,7 +337,7 @@ static int io_read_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
   int fd, result = -1;
   int64_t len = end_offs - start_offs;
 
-  fd = io_open_chunk(arg->cachedir_fd, chunk_no, start_offs, end_offs);
+  fd = io_open_chunk(arg, chunk_no, start_offs, end_offs);
   if (fd < 0)
     goto ERROR;
 
@@ -384,7 +389,7 @@ static int io_write_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
   int fd, result = -1;
   int64_t len = end_offs - start_offs;
 
-  fd = io_open_chunk(arg->cachedir_fd, chunk_no, start_offs, end_offs);
+  fd = io_open_chunk(arg, chunk_no, start_offs, end_offs);
   if (fd < 0)
     goto ERROR;
 
@@ -499,18 +504,18 @@ ERROR:
   return NULL;
 }
 
-static int get_device_by_name (char *devicename, struct device *dev)
+static int get_device_by_name (struct client_thread_arg *arg)
 {
   unsigned int i;
   int result;
 
 /* TODO: mutex lock global cfg here */
   for (i = 0; i < cfg.num_devices; i++)
-    if (!strcmp(cfg.devs[i].name, devicename))
+    if (!strcmp(cfg.devs[i].name, arg->dev.name))
       break;
 
   if (i < cfg.num_devices) {
-    memcpy(dev, &cfg.devs[i], sizeof(*dev));
+    memcpy(&arg->dev, &cfg.devs[i], sizeof(arg->dev));
     result = 0;
   } else
     result = -1;
@@ -570,119 +575,119 @@ static int nbd_send_devicelist (int socket, uint32_t opt_type)
   return nbd_send_reply(socket, opt_type, NBD_REP_ACK, NULL);
 }
 
-static int nbd_send_device_info (int socket, struct device *dev,
-                                 uint32_t flags)
+static int nbd_send_device_info (struct client_thread_arg *arg, uint32_t flags)
 {
   uint64_t devsize;
   uint16_t devflags;
   char padding[124];
 
-  devsize = htonll(dev->size);
+  devsize = htonll(arg->dev.size);
 
-  if (write_all(socket, &devsize, sizeof(devsize)) != 0)
+  if (write_all(arg->socket, &devsize, sizeof(devsize)) != 0)
     return -1;
 
   devflags = NBD_FLAG_HAS_FLAGS | NBD_FLAG_SEND_FLUSH;
   devflags = htons(devflags);
 
-  if (write_all(socket, &devflags, sizeof(devflags)) != 0)
+  if (write_all(arg->socket, &devflags, sizeof(devflags)) != 0)
     return -1;
 
   if ((flags & NBD_FLAG_NO_ZEROES) != NBD_FLAG_NO_ZEROES) {
     memset(padding, 0, sizeof(padding));
-    if (write_all(socket, padding, sizeof(padding)) != 0)
+    if (write_all(arg->socket, padding, sizeof(padding)) != 0)
       return -1;
   }
 
   return 0;
 }
 
-static int nbd_handshake (int socket, struct device *dev, char *clientname)
+static int nbd_handshake (struct client_thread_arg *arg)
 {
   uint32_t flags, opt_type, opt_len;
   char ihaveopt[8];
   uint16_t srv_flags;
-  char devicename[NBD_BUFSIZE];
 
-  if (write_all(socket, NBD_INIT_PASSWD, sizeof(NBD_INIT_PASSWD)) != 0)
+  if (write_all(arg->socket, NBD_INIT_PASSWD, sizeof(NBD_INIT_PASSWD)) != 0)
     return -1;
 
-  if (write_all(socket, NBD_OPTS_MAGIC, sizeof(NBD_OPTS_MAGIC)) != 0)
+  if (write_all(arg->socket, NBD_OPTS_MAGIC, sizeof(NBD_OPTS_MAGIC)) != 0)
     return -1;
 
   srv_flags = NBD_FLAG_FIXED_NEWSTYLE | NBD_FLAG_NO_ZEROES;
   srv_flags = htons(srv_flags);
-  if (write_all(socket, &srv_flags, sizeof(srv_flags)) != 0)
+  if (write_all(arg->socket, &srv_flags, sizeof(srv_flags)) != 0)
     return -1;
 
-  if (read_all(socket, &flags, sizeof(flags)) != 0)
+  if (read_all(arg->socket, &flags, sizeof(flags)) != 0)
     return -1;
 
   flags = ntohl(flags);
   if ((flags & NBD_FLAG_FIXED_NEWSTYLE) != NBD_FLAG_FIXED_NEWSTYLE) {
     logerr("client %s without NBD_FLAG_FIXED_NEWSTYLE (qemu?) may fail",
-           clientname);
+           arg->clientname);
 #if 0
     return -1;
 #endif
   }
 
   for (;;) {
-    if (read_all(socket, ihaveopt, sizeof(ihaveopt)) != 0)
+    if (read_all(arg->socket, ihaveopt, sizeof(ihaveopt)) != 0)
       return -1;
 
     if (memcmp(ihaveopt, NBD_OPTS_MAGIC, sizeof(NBD_OPTS_MAGIC)) != 0) {
-      logerr("client %s sent no NBD_OPTS_MAGIC", clientname);
+      logerr("client %s sent no NBD_OPTS_MAGIC", arg->clientname);
       return -1;
     }
 
-    if (read_all(socket, &opt_type, sizeof(opt_type)) != 0)
+    if (read_all(arg->socket, &opt_type, sizeof(opt_type)) != 0)
       return -1;
 
-    if (read_all(socket, &opt_len, sizeof(opt_len)) != 0)
+    if (read_all(arg->socket, &opt_len, sizeof(opt_len)) != 0)
       return -1;
 
     opt_len = ntohl(opt_len);
     if (opt_len >= NBD_BUFSIZE) {
-      logerr("client %s opt_len %u too large", clientname, opt_len);
-      nbd_send_reply(socket, opt_type, NBD_REP_ERR_INVALID, NULL);
+      logerr("client %s opt_len %u too large", arg->clientname, opt_len);
+      nbd_send_reply(arg->socket, opt_type, NBD_REP_ERR_INVALID, NULL);
       return -1;
     }
 
     if (opt_len > 0) {
-      if (read_all(socket, devicename, opt_len) != 0)
+      if (read_all(arg->socket, arg->dev.name, opt_len) != 0)
         return -1;
-      devicename[opt_len] = '\0';
+
+      arg->dev.name[opt_len] = '\0';
     }
 
     switch (ntohl(opt_type)) {
       case NBD_OPT_EXPORT_NAME:
-        if (get_device_by_name(devicename, dev) != 0) {
-          logerr("client %s unknown device %s", clientname, devicename);
+        if (get_device_by_name(arg) != 0) {
+          logerr("client %s unknown device %s",
+                 arg->clientname, arg->dev.name);
           return -1;
         }
-        return nbd_send_device_info(socket, dev, flags);
+        return nbd_send_device_info(arg, flags);
 
       case NBD_OPT_ABORT:
         if (opt_len == 0)
-          nbd_send_reply(socket, opt_type, NBD_REP_ACK, NULL);
+          nbd_send_reply(arg->socket, opt_type, NBD_REP_ACK, NULL);
         else
-          nbd_send_reply(socket, opt_type, NBD_REP_ERR_INVALID, NULL);
+          nbd_send_reply(arg->socket, opt_type, NBD_REP_ERR_INVALID, NULL);
         return -1;
 
       case NBD_OPT_LIST:
         if (opt_len == 0) {
-          if (nbd_send_devicelist(socket, opt_type) != 0)
+          if (nbd_send_devicelist(arg->socket, opt_type) != 0)
             return -1;
         } else {
-          if (nbd_send_reply(socket, opt_type, NBD_REP_ERR_INVALID, NULL) != 0)
+          if (nbd_send_reply(arg->socket, opt_type, NBD_REP_ERR_INVALID, NULL) != 0)
             return -1;
         }
         break;
 
       default:
-        logerr("client %s unknown opt_type %u", clientname, opt_type);
-        if (nbd_send_reply(socket, opt_type, NBD_REP_ERR_UNSUP, NULL) != 0)
+        logerr("client %s unknown opt_type %u", arg->clientname, opt_type);
+        if (nbd_send_reply(arg->socket, opt_type, NBD_REP_ERR_UNSUP, NULL) != 0)
           return -1;
         break;
     }
@@ -720,29 +725,29 @@ static struct io_thread_arg *find_free_io_worker ()
   }
 }
 
-static void client_address (struct client_thread_arg *client, char *buffer,
-                            size_t bufsiz)
+static void client_address (struct client_thread_arg *arg)
 {
   char addr[INET6_ADDRSTRLEN];
   struct sockaddr_in *sin;
   struct sockaddr_in6 *sin6;
 
-  switch (client->addr.sa_family) {
+  switch (arg->addr.sa_family) {
     case AF_INET:
-      sin = (struct sockaddr_in*) &client->addr;
-      snprintf(buffer, bufsiz, "%s:%u",
+      sin = (struct sockaddr_in*) &arg->addr;
+      snprintf(arg->clientname, sizeof(arg->clientname), "%s:%u",
                inet_ntop(sin->sin_family, &sin->sin_addr, addr, sizeof(addr)),
                htons(sin->sin_port));
       break;
     case AF_INET6:
-      sin6 = (struct sockaddr_in6*) &client->addr;
-      snprintf(buffer, bufsiz, "[%s]:%u",
+      sin6 = (struct sockaddr_in6*) &arg->addr;
+      snprintf(arg->clientname, sizeof(arg->clientname), "[%s]:%u",
                inet_ntop(sin6->sin6_family, &sin6->sin6_addr, addr,
                          sizeof(addr)),
                htons(sin6->sin6_port));
       break;
     default:
-      snprintf(buffer, bufsiz, "%s", "<unknown address family>");
+      snprintf(arg->clientname, sizeof(arg->clientname), "%s",
+               "<unknown address family>");
       break;
   }
 }
@@ -807,6 +812,7 @@ static int client_worker_loop (struct client_thread_arg *arg)
 
   slot->socket = arg->socket;
   slot->socket_mtx = &arg->socket_mtx;
+  strcpy(slot->devicename, arg->dev.name);
   slot->cachedir_fd = arg->cachedir_fd;
 
   if ((res = pthread_cond_signal(&slot->wakeup_cond)) != 0) {
@@ -830,9 +836,7 @@ ERROR:
 static void *client_worker (void *arg0)
 {
   struct client_thread_arg *arg = (struct client_thread_arg*) arg0;
-  char clientname[INET6_ADDRSTRLEN + 8];
   int res;
-  struct device dev;
 
   if (block_signals() != 0)
     goto ERROR;
@@ -842,9 +846,9 @@ static void *client_worker (void *arg0)
     goto ERROR;
   }
 
-  client_address(arg, clientname, sizeof(clientname));
+  client_address(arg);
 
-  if (nbd_handshake(arg->socket, &dev, clientname) != 0)
+  if (nbd_handshake(arg) != 0)
     goto ERROR;
 
   if ((res = pthread_mutex_init(&arg->socket_mtx, NULL)) != 0) {
@@ -852,19 +856,19 @@ static void *client_worker (void *arg0)
     goto ERROR;
   }
 
-  if ((arg->cachedir_fd = open(dev.cachedir, O_RDONLY|O_DIRECTORY)) < 0) {
+  if ((arg->cachedir_fd = open(arg->dev.cachedir, O_RDONLY|O_DIRECTORY)) < 0) {
     logerr("open(): %s", strerror(errno));
     goto ERROR1;
   }
 
-  syslog(LOG_INFO, "client %s connecting to device %s\n", clientname,
-         dev.name);
+  syslog(LOG_INFO, "client %s connecting to device %s\n", arg->clientname,
+         arg->dev.name);
 
   while (client_worker_loop(arg) == 0)
     ;;
 
-  syslog(LOG_INFO, "client %s disconnecting from device %s\n", clientname,
-         dev.name);
+  syslog(LOG_INFO, "client %s disconnecting from device %s\n", arg->clientname,
+         arg->dev.name);
 
   if (close(arg->cachedir_fd) != 0)
     logerr("close(): %s", strerror(errno));
@@ -1071,8 +1075,11 @@ static void daemonize ()
   if (pid > 0)
     exit(0);
 
-  if (setsid() < 0)
+  if (setsid() == -1)
     err(1, "setsid()");
+
+  if (setpgrp() != 0)
+    err(1, "setpgrp()");
 
   if (chdir("/"))
     err(1, "chdir(): /");

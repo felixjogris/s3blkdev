@@ -38,7 +38,7 @@ int load_config (char *configfile, struct config *cfg,
   struct config newcfg;
   FILE *fh;
   int result = -1, in_device = 0;
-  char line[1024], devname[128];
+  char line[1024], devname[DEVNAME_SIZE];
 
   *err_line = 0;
 
@@ -104,7 +104,7 @@ int load_config (char *configfile, struct config *cfg,
       continue;
     }
 
-    if (sscanf(line, " [%127[^]]", devname)) {
+    if (sscanf(line, " [%63[^]]", devname)) {
       if (newcfg.num_devices >= sizeof(newcfg.devs)/sizeof(newcfg.devs[0])) {
         *errstr = "too many devices";
         goto ERROR1;

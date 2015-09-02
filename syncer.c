@@ -27,11 +27,12 @@ struct chunk_entry {
 
 char buf1[CHUNKSIZE], buf2[CHUNKSIZE];
 
-static void sync_chunk (int dir_fd, char *name, int evict)
+static void sync_chunk (char *devicename, int dir_fd, char *name, int evict)
 {
   int fd, storedir_fd, store_fd, equal;
   struct flock flk;
   struct stat st;
+  char tmpbuf[PATH_MAX];
 
   fd = openat(dir_fd, name, (evict ? O_RDWR : O_RDONLY) | O_NOATIME);
   if (fd < 0) {
@@ -66,8 +67,9 @@ static void sync_chunk (int dir_fd, char *name, int evict)
   }
 
 /* TODO */
-  if ((storedir_fd = open("/var/tmp/s3nbd2", O_RDONLY|O_DIRECTORY)) < 0) {
-    logwarn("open(): TODO");
+  snprintf(tmpbuf, sizeof(tmpbuf), "/var/tmp/%s.store", devicename);
+  if ((storedir_fd = open(tmpbuf, O_RDONLY|O_DIRECTORY)) < 0) {
+    logwarn("open(): %s", tmpbuf);
     goto ERROR1;
   }
 
@@ -273,14 +275,14 @@ int main (int argc, char **argv)
 
     if (mode == SYNCER) {
       for (l = num_chunks - 1; l >= 0; l--)
-        sync_chunk(dir_fd, chunks[l].name, 0);
+        sync_chunk(cfg.devs[devnum].name, dir_fd, chunks[l].name, 0);
     } else if (eviction_needed(dir_fd, max_used_pct)) {
       for (i = 0; (i < num_chunks) && eviction_needed(dir_fd, min_used_pct); i++)
-        sync_chunk(dir_fd, chunks[i].name, 1);
+        sync_chunk(cfg.devs[devnum].name, dir_fd, chunks[i].name, 1);
 
       for (i = 0; (i < num_chunks) && eviction_needed(dir_fd, min_used_pct); i++)
         if (chunks[i].name[0] != '\0')
-          sync_chunk(dir_fd, chunks[i].name, 2);
+          sync_chunk(cfg.devs[devnum].name, dir_fd, chunks[i].name, 2);
     }
 
     free(chunks);

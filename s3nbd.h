@@ -9,9 +9,10 @@
 
 #define DEFAULT_CONFIGFILE "/etc/s3nbd.conf"
 #define MAX_IO_THREADS 128
+#define DEVNAME_SIZE 64
 
 struct device {
-  char name[128];
+  char name[DEVNAME_SIZE];
   char cachedir[PATH_MAX];
   size_t size;
 };
