@@ -1061,6 +1061,36 @@ static void join_io_workers ()
   }
 }
 
+static void daemonize ()
+{
+  pid_t pid;
+
+  if ((pid = fork()) < 0)
+    err(1, "fork()");
+
+  if (pid > 0)
+    exit(0);
+
+  if (setsid() < 0)
+    err(1, "setsid()");
+
+  if (chdir("/"))
+    err(1, "chdir(): /");
+}
+
+static void save_pidfile (char *pidfile)
+{
+  FILE *fh;
+
+  if ((fh = fopen(pidfile, "wx")) == NULL)
+    err(1, "fopen(): %s", pidfile);
+
+  fprintf(fh, "%u\n", getpid());
+
+  if (fclose(fh) != 0)
+    err(1, "fclose(): %s", pidfile);
+}
+
 int main (int argc, char **argv)
 {
 #define log_error(fmt, params ...) do { \
@@ -1091,6 +1121,12 @@ int main (int argc, char **argv)
 
   num_io_threads = cfg.num_io_threads;
 
+  if (!foreground)
+    daemonize();
+
+  if (pidfile != NULL)
+    save_pidfile(pidfile);
+
   setup_signals();
   listen_socket = create_listen_socket(cfg.listen, cfg.port);
   launch_io_workers();
@@ -1100,6 +1136,12 @@ int main (int argc, char **argv)
   res = pthread_attr_setdetachstate(&thread_attr, PTHREAD_CREATE_DETACHED);
   if (res != 0)
     errx(1, "pthread_attr_setdetachstate(): %s", strerror(res));
+
+  if (!foreground) {
+    close(0);
+    close(1);
+    close(2);
+  }
 
   openlog("s3nbd", LOG_NDELAY|LOG_PID, LOG_DAEMON);
   syslog(LOG_INFO, "starting...\n");
