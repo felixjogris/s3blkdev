@@ -2,20 +2,22 @@ CFLAGS=-W -Wall -O3 -pipe
 LDFLAGS=-s
 LIBS=-lpthread
 
-all:	s3nbd locktool syncer
+TARGETS=s3nbd locktool syncer
 
-s3nbd:	s3nbd.c s3nbd.h
-	$(CC) $(CFLAGS) $(LDFLAGS) $(LIBS) -o $@ $<
+all:	$(TARGETS)
 
-locktool:	locktool.c s3nbd.h
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
+s3nbd:	s3nbd.o config.o
+	$(CC) $(LDFLAGS) $(LIBS) -o $@ $^
 
-syncer:	syncer.c s3nbd.h
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
+syncer:	syncer.o config.o
+	$(CC) $(LDFLAGS) -o $@ $^
 
-test:	test.c
-	$(CC) $(CFLAGS) $(LDFLAGS) $(LIBS) -o $@ $<
+locktool:	locktool.o config.o
+	$(CC) $(LDFLAGS) -o $@ $^
 
-clean:	; -rm s3nbd locktool syncer test
+%.o:	%.c s3nbd.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+clean:	; -rm *.o $(TARGETS)
 
 .PHONY:	all clean

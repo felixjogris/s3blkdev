@@ -965,15 +965,17 @@ void show_help ()
   puts(
 "Usage:\n"
 "\n"
-"s3nbd [-c <config directory>] [-f]\n"
+"s3nbd [-c <config file>] [-p <pid file>] [-f]\n"
 "s3nbd -h\n"
 "\n"
-"  -c <config directory>    read config options from specified directory\n"
-"                           instead of /etc/s3nbd\n"
+"  -c <config file>    read config options from specified file instead of\n"
+"                      " DEFAULT_CONFIGFILE "\n"
 "\n"
-"  -f                       run in foreground, don't daemonize\n"
+"  -p <pid file>       save pid to this file\n"
 "\n"
-"  -h                       show this help ;-)\n"
+"  -f                  run in foreground, don't daemonize\n"
+"\n"
+"  -h                  show this help ;-)\n"
 );
 }
 
@@ -1030,23 +1032,31 @@ int main (int argc, char **argv)
   else syslog(LOG_WARNING, fmt "\n", ## params); \
 } while (0)
 
-  char *ip = "0.0.0.0" /*"/tmp/s3nbd.sock"*/, *port = "10809", *configdir = "/etc/s3nbd";
+  struct config cfg;
+  char *configfile = DEFAULT_CONFIGFILE, *pidfile = NULL, *errstr;
   int foreground = 0, listen_socket, res;
+  unsigned int errline;
   pthread_attr_t thread_attr;
   pthread_t thread;
   struct client_thread_arg *thread_arg;
 
-  while ((res = getopt(argc, argv, "hc:f")) != -1) {
+  while ((res = getopt(argc, argv, "c:fhp:")) != -1) {
     switch (res) {
-      case 'c': configdir = optarg; break;
+      case 'c': configfile = optarg; break;
       case 'f': foreground = 1; break;
       case 'h': show_help(); return 0;
+      case 'p': pidfile = optarg; break;
       default: errx(1, "Unknown option '%i'. Use -h for help.", res);
     }
   }
 
+  cfg.ctime.tv_sec = 0;
+  if (load_config(configfile, &cfg, &errline, &errstr) != 0)
+    errx(1, "cannot load config file %s: %s (line %i)",
+         configfile, errstr, errline);
+
   setup_signals();
-  listen_socket = create_listen_socket(ip, port);
+  listen_socket = create_listen_socket(cfg.listen, cfg.port);
   launch_io_workers();
 
   if ((res = pthread_attr_init(&thread_attr)) != 0)

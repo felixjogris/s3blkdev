@@ -1,6 +1,45 @@
 #ifndef _S3NBD_H
 #define _S3NBD_H
 
+#include <limits.h>
+#include <netinet/in.h>
+#include <time.h>
+
 #define CHUNKSIZE (8 * 1024 * 1024)
+
+#define DEFAULT_CONFIGFILE "/etc/s3nbd.conf"
+
+struct config {
+  char s3hosts[16][256];
+  union {
+    struct sockaddr sa;
+    struct sockaddr_in sin;
+    struct sockaddr_in6 sin6;
+  } s3addrs[16];
+  unsigned short num_s3hosts;
+  unsigned short s3ports[4];
+  unsigned short num_s3ports;
+  unsigned char s3ssl;
+  char s3accesskey[128];
+  char s3secretkey[128];
+
+  unsigned short num_io_threads;
+  unsigned short num_s3_fetchers;
+
+  struct {
+    char name[128];
+    char cachedir[PATH_MAX];
+    size_t size;
+  } devs[128];
+  unsigned short num_devices;
+
+  char listen[128];
+  char port[8];
+
+  struct timespec ctime;
+};
+
+int load_config (char *configfile, struct config *cfg,
+                 unsigned int *err_line, char **errstr);
 
 #endif
