@@ -558,7 +558,7 @@ int nbd_send_device_info (int socket, char *devicename, uint32_t flags)
   if (strcmp(devicename, "tehdisk"))
     return -1;
 
-  devsize = 200 * 1024 * 1024;
+  devsize = 2000 * 1024 * 1024;
   devsize = htonll(devsize);
 
   if (write_all(socket, &devsize, sizeof(devsize)) != 0)
@@ -601,8 +601,11 @@ int nbd_handshake (int socket, char *devicename, char *clientname)
 
   flags = ntohl(flags);
   if ((flags & NBD_FLAG_FIXED_NEWSTYLE) != NBD_FLAG_FIXED_NEWSTYLE) {
-    logerr("oldstyle client %s not supported", clientname);
+    logerr("client %s without NBD_FLAG_FIXED_NEWSTYLE (qemu?) may fail",
+           clientname);
+#if 0
     return -1;
+#endif
   }
 
   for (;;) {
@@ -815,6 +818,8 @@ void *client_worker (void *arg0) {
     goto ERROR;
   }
 
+  client_address(arg, clientname, sizeof(clientname));
+
   if (nbd_handshake(arg->socket, devicename, clientname) != 0)
     goto ERROR;
 
@@ -829,7 +834,6 @@ void *client_worker (void *arg0) {
     goto ERROR1;
   }
 
-  client_address(arg, clientname, sizeof(clientname));
   syslog(LOG_INFO, "client %s connecting to device %s\n", clientname,
          devicename);
 
@@ -1026,7 +1030,7 @@ int main (int argc, char **argv)
   else syslog(LOG_WARNING, fmt "\n", ## params); \
 } while (0)
 
-  char *ip = "0.0.0.0", *port = "10809", *configdir = "/etc/s3nbd";
+  char *ip = "0.0.0.0" /*"/tmp/s3nbd.sock"*/, *port = "10809", *configdir = "/etc/s3nbd";
   int foreground = 0, listen_socket, res;
   pthread_attr_t thread_attr;
   pthread_t thread;
