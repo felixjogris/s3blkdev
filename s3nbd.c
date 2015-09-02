@@ -77,8 +77,9 @@ struct io_thread_arg {
 };
 
 int running = 1;
-int num_io_threads = 4;
 struct io_thread_arg io_threads[128];
+unsigned short num_io_threads;
+struct config cfg;
 
 ssize_t read_all (int fd, void *buffer, size_t len)
 {
@@ -495,6 +496,25 @@ ERROR:
   return NULL;
 }
 
+int get_device_by_name (char *devicename, struct device *dev)
+{
+  unsigned int i;
+  int result;
+
+/* TODO: mutex lock global cfg here */
+  for (i = 0; i < cfg.num_devices; i++)
+    if (!strcmp(cfg.devs[i].name, devicename))
+      break;
+
+  if (i < cfg.num_devices) {
+    memcpy(dev, &cfg.devs[i], sizeof(*dev));
+    result = 0;
+  } else
+    result = -1;
+
+  return result;
+}
+
 int nbd_send_reply (int socket, uint32_t opt_type, uint32_t reply_type,
                     char *reply_data)
 {
@@ -534,32 +554,26 @@ int nbd_send_reply (int socket, uint32_t opt_type, uint32_t reply_type,
   return 0;
 }
 
-/* TODO */
 int nbd_send_devicelist (int socket, uint32_t opt_type)
 {
-  char *devlist[]={"not yet implemented", "2 be done", "yo mama's a fine disk"};
   unsigned int i;
 
-  for (i = 0; i < sizeof(devlist)/sizeof(devlist[0]); i++) {
-    if (nbd_send_reply(socket, opt_type, NBD_REP_SERVER, devlist[i]))
+/* XXX: mutex lock global cfg here? */
+  for (i = 0; i < cfg.num_devices; i++) {
+    if (nbd_send_reply(socket, opt_type, NBD_REP_SERVER, cfg.devs[i].name))
       return -1;
   }
 
   return nbd_send_reply(socket, opt_type, NBD_REP_ACK, NULL);
 }
 
-/* TODO */
-int nbd_send_device_info (int socket, char *devicename, uint32_t flags)
+int nbd_send_device_info (int socket, struct device *dev, uint32_t flags)
 {
   uint64_t devsize;
   uint16_t devflags;
   char padding[124];
 
-  if (strcmp(devicename, "tehdisk"))
-    return -1;
-
-  devsize = 2000 * 1024 * 1024;
-  devsize = htonll(devsize);
+  devsize = htonll(dev->size);
 
   if (write_all(socket, &devsize, sizeof(devsize)) != 0)
     return -1;
@@ -579,11 +593,12 @@ int nbd_send_device_info (int socket, char *devicename, uint32_t flags)
   return 0;
 }
 
-int nbd_handshake (int socket, char *devicename, char *clientname)
+int nbd_handshake (int socket, struct device *dev, char *clientname)
 {
   uint32_t flags, opt_type, opt_len;
   char ihaveopt[8];
   uint16_t srv_flags;
+  char devicename[NBD_BUFSIZE];
 
   if (write_all(socket, NBD_INIT_PASSWD, sizeof(NBD_INIT_PASSWD)) != 0)
     return -1;
@@ -633,12 +648,16 @@ int nbd_handshake (int socket, char *devicename, char *clientname)
     if (opt_len > 0) {
       if (read_all(socket, devicename, opt_len) != 0)
         return -1;
+      devicename[opt_len] = '\0';
     }
 
     switch (ntohl(opt_type)) {
       case NBD_OPT_EXPORT_NAME:
-        devicename[opt_len] = '\0';
-        return nbd_send_device_info(socket, devicename, flags);
+        if (get_device_by_name(devicename, dev) != 0) {
+          logerr("client %s unknown device %s", clientname, devicename);
+          return -1;
+        }
+        return nbd_send_device_info(socket, dev, flags);
 
       case NBD_OPT_ABORT:
         if (opt_len == 0)
@@ -806,9 +825,9 @@ ERROR:
 
 void *client_worker (void *arg0) {
   struct client_thread_arg *arg = (struct client_thread_arg*) arg0;
-  char devicename[NBD_BUFSIZE];
   char clientname[INET6_ADDRSTRLEN + 8];
   int res;
+  struct device dev;
 
   if (block_signals() != 0)
     goto ERROR;
@@ -820,7 +839,7 @@ void *client_worker (void *arg0) {
 
   client_address(arg, clientname, sizeof(clientname));
 
-  if (nbd_handshake(arg->socket, devicename, clientname) != 0)
+  if (nbd_handshake(arg->socket, &dev, clientname) != 0)
     goto ERROR;
 
   if ((res = pthread_mutex_init(&arg->socket_mtx, NULL)) != 0) {
@@ -828,20 +847,19 @@ void *client_worker (void *arg0) {
     goto ERROR;
   }
 
-/* TODO */
-  if ((arg->cachedir_fd = open("/var/tmp/s3nbd", O_RDONLY|O_DIRECTORY)) < 0) {
+  if ((arg->cachedir_fd = open(dev.cachedir, O_RDONLY|O_DIRECTORY)) < 0) {
     logerr("open(): %s", strerror(errno));
     goto ERROR1;
   }
 
   syslog(LOG_INFO, "client %s connecting to device %s\n", clientname,
-         devicename);
+         dev.name);
 
   while (client_worker_loop(arg) == 0)
     ;;
 
   syslog(LOG_INFO, "client %s disconnecting from device %s\n", clientname,
-         devicename);
+         dev.name);
 
   if (close(arg->cachedir_fd) != 0)
     logerr("close(): %s", strerror(errno));
@@ -1054,6 +1072,8 @@ int main (int argc, char **argv)
   if (load_config(configfile, &cfg, &errline, &errstr) != 0)
     errx(1, "cannot load config file %s: %s (line %i)",
          configfile, errstr, errline);
+
+  num_io_threads = cfg.num_io_threads;
 
   setup_signals();
   listen_socket = create_listen_socket(cfg.listen, cfg.port);

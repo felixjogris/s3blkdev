@@ -8,6 +8,13 @@
 #define CHUNKSIZE (8 * 1024 * 1024)
 
 #define DEFAULT_CONFIGFILE "/etc/s3nbd.conf"
+#define MAX_IO_THREADS 128
+
+struct device {
+  char name[128];
+  char cachedir[PATH_MAX];
+  size_t size;
+};
 
 struct config {
   char s3hosts[16][256];
@@ -26,11 +33,7 @@ struct config {
   unsigned short num_io_threads;
   unsigned short num_s3_fetchers;
 
-  struct {
-    char name[128];
-    char cachedir[PATH_MAX];
-    size_t size;
-  } devs[128];
+  struct device devs[128];
   unsigned short num_devices;
 
   char listen[128];
