@@ -38,8 +38,8 @@ int load_config (char *configfile, struct config *cfg,
   struct config newcfg;
   struct stat st;
   FILE *fh;
-  int result = -1, pos, in_device = 0;
-  char line[1024];
+  int result = -1, in_device = 0;
+  char line[1024], devname[128];
 
   *err_line = 0;
 
@@ -70,25 +70,24 @@ int load_config (char *configfile, struct config *cfg,
     if (is_comment(line) || is_empty(line))
       continue;
 
-    if (in_device == 7) {
-      newcfg.num_devices++;
-      in_device = 0;
-    }
-
     if (in_device) {
       if (sscanf(line, "cachedir %4095s",
                  newcfg.devs[newcfg.num_devices].cachedir)) {
         in_device |= 2;
-        continue;
-      }
-
-      if (sscanf(line, "size %lu", &newcfg.devs[newcfg.num_devices].size)) {
+      } else if (sscanf(line, "size %lu",
+                        &newcfg.devs[newcfg.num_devices].size)) {
         in_device |= 4;
-        continue;
+      } else {
+        *errstr = "unknown device parameter";
+        goto ERROR;
       }
 
-      *errstr = "unknown device parameter";
-      goto ERROR;
+      if (in_device == 7) {
+        newcfg.num_devices++;
+        in_device = 0;
+      }
+
+      continue;
     }
 
     if (sscanf(line, " listen %127s", newcfg.listen) ||
@@ -115,23 +114,25 @@ int load_config (char *configfile, struct config *cfg,
       continue;
     }
 
-    if (sscanf(line, " [%n", &pos)) {
+    if (sscanf(line, " [%127[^]]", devname)) {
       if (newcfg.num_devices >= sizeof(newcfg.devs)/sizeof(newcfg.devs[0])) {
         *errstr = "too many devices";
         goto ERROR;
       }
 
-      if (!sscanf(line + pos, "%127[^[]",
-                  newcfg.devs[newcfg.num_devices].name)) {
-        *errstr = "invalid device name";
-        goto ERROR;
-      }
-
+      strncpy(newcfg.devs[newcfg.num_devices].name, devname,
+              sizeof(newcfg.devs[0].name));
       in_device = 1;
+
       continue;
     }
 
     *errstr = "unknown configuration directive";
+    goto ERROR;
+  }
+
+  if (in_device) {
+    *errstr = "incomplete device configuration";
     goto ERROR;
   }
 
@@ -142,7 +143,7 @@ int load_config (char *configfile, struct config *cfg,
   result = 0;
 
 ERROR:
-  if (!feof(fh)) {
+  if (ferror(fh)) {
     *errstr = strerror(errno);
     result = -1;
   }
