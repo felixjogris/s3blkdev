@@ -1191,6 +1191,9 @@ int main (int argc, char **argv)
   syslog(LOG_INFO, "waiting for I/O workers...\n");
   join_io_workers();
 
+  if (unlink(pidfile) != 0)
+    log_error("unlink(): %s: %s", pidfile, strerror(errno));
+
   syslog(LOG_INFO, "exiting...\n");
   closelog();
 
