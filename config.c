@@ -11,12 +11,12 @@
 #define XSTR(a) #a
 #define STR(a) XSTR(a)
 
-int is_comment (char *line)
+static int is_comment (char *line)
 {
   return ((line[0] == '#') || (line[0] == ';'));
 }
 
-int is_empty (char *line)
+static int is_empty (char *line)
 {
   char *p;
 
@@ -27,7 +27,7 @@ int is_empty (char *line)
   return 1;
 }
 
-int is_incomplete (char *line)
+static int is_incomplete (char *line)
 {
   return ((strlen(line) == 0) || (line[strlen(line) - 1] != '\n'));
 }

@@ -9,7 +9,7 @@
 
 #include "s3nbd.h"
 
-char *lock_type_to_string (int type)
+static char *lock_type_to_string (int type)
 {
   switch (type) {
     case F_RDLCK: return "F_RDLCK";
@@ -18,7 +18,7 @@ char *lock_type_to_string (int type)
   }
 }
 
-char *lock_whence_to_string (int whence)
+static char *lock_whence_to_string (int whence)
 {
   switch (whence) {
     case SEEK_SET: return "SEEK_SET";
@@ -28,7 +28,7 @@ char *lock_whence_to_string (int whence)
   }
 }
 
-int do_lock (int fd, int cmd, int type, off_t start, off_t end)
+static int do_lock (int fd, int cmd, int type, off_t start, off_t end)
 {
   int result;
   struct flock flk;

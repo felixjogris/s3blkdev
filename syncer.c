@@ -27,7 +27,7 @@ struct chunk_entry {
 
 char buf1[CHUNKSIZE], buf2[CHUNKSIZE];
 
-void sync_chunk (int dir_fd, char *name, int evict)
+static void sync_chunk (int dir_fd, char *name, int evict)
 {
   int fd, storedir_fd, store_fd, equal;
   struct flock flk;
@@ -126,7 +126,7 @@ ERROR:
   return;
 }
 
-int open_cache_dir (char *dirname)
+static int open_cache_dir (char *dirname)
 {
   int dir_fd;
 
@@ -137,7 +137,7 @@ int open_cache_dir (char *dirname)
   return dir_fd;
 }
 
-size_t read_cache_dir (int dir_fd, struct chunk_entry **chunks)
+static size_t read_cache_dir (int dir_fd, struct chunk_entry **chunks)
 {
   DIR *dir;
   struct dirent *entry;
@@ -185,7 +185,7 @@ size_t read_cache_dir (int dir_fd, struct chunk_entry **chunks)
   return num_chunks;
 }
 
-int eviction_needed (int dir_fd, unsigned int max_used_pct)
+static int eviction_needed (int dir_fd, unsigned int max_used_pct)
 {
   struct statfs fs;
   unsigned int min_free_pct = 100 - max_used_pct;
@@ -199,7 +199,7 @@ int eviction_needed (int dir_fd, unsigned int max_used_pct)
           (fs.f_ffree * 100 / fs.f_files < min_free_pct));
 }
 
-int compare_atimes (const void *a0, const void *b0)
+static int compare_atimes (const void *a0, const void *b0)
 {
   struct chunk_entry *a = (struct chunk_entry*) a0;
   struct chunk_entry *b = (struct chunk_entry*) b0;
@@ -208,7 +208,7 @@ int compare_atimes (const void *a0, const void *b0)
   return (a->atime < b->atime ? -1 : 1);
 }
 
-void show_help ()
+static void show_help ()
 {
   puts(
 "Usage:\n"

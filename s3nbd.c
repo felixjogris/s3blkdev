@@ -82,7 +82,7 @@ struct io_thread_arg io_threads[128];
 unsigned short num_io_threads;
 struct config cfg;
 
-ssize_t read_all (int fd, void *buffer, size_t len)
+static ssize_t read_all (int fd, void *buffer, size_t len)
 {
   ssize_t res;
 
@@ -97,7 +97,7 @@ ssize_t read_all (int fd, void *buffer, size_t len)
   return 0;
 }
 
-ssize_t write_all (int fd, const void *buffer, size_t len)
+static ssize_t write_all (int fd, const void *buffer, size_t len)
 {
   ssize_t res;
 
@@ -112,7 +112,7 @@ ssize_t write_all (int fd, const void *buffer, size_t len)
 }
 
 /* TODO */
-int fetch_chunk (char *name, int fd)
+static int fetch_chunk (char *name, int fd)
 {
   int storedir_fd, store_fd, result = -1;
   unsigned int i;
@@ -165,7 +165,7 @@ ERROR:
   return result;
 }
 
-uint64_t htonll (uint64_t u64h)
+static uint64_t htonll (uint64_t u64h)
 {
   uint32_t lo = u64h & 0xffffffffffffffff;
   uint32_t hi = u64h >> 32;
@@ -177,12 +177,12 @@ uint64_t htonll (uint64_t u64h)
   return u64n;
 }
 
-uint64_t ntohll (uint64_t u64n)
+static uint64_t ntohll (uint64_t u64n)
 {
   return htonll(u64n);
 }
 
-int block_signals ()
+static int block_signals ()
 {
   sigset_t sigset;
   int res;
@@ -200,7 +200,8 @@ int block_signals ()
   return 0;
 }
 
-int io_send_reply (struct io_thread_arg *arg, uint32_t error, uint32_t len)
+static int io_send_reply (struct io_thread_arg *arg, uint32_t error,
+                          uint32_t len)
 {
   const int hdrlen = sizeof(arg->req.magic) + sizeof(arg->req.type) +
                      sizeof(arg->req.handle);
@@ -225,8 +226,8 @@ int io_send_reply (struct io_thread_arg *arg, uint32_t error, uint32_t len)
   return 0;
 }
 
-int io_lock_chunk (int fd, short int type, uint64_t start_offs,
-                   uint64_t end_offs)
+static int io_lock_chunk (int fd, short int type, uint64_t start_offs,
+                          uint64_t end_offs)
 {
   struct flock flk;
 
@@ -244,8 +245,8 @@ int io_lock_chunk (int fd, short int type, uint64_t start_offs,
   return 0;
 }
 
-int io_open_chunk (int cachedir_fd, uint64_t chunk_no,
-                   uint64_t start_offs, uint64_t end_offs)
+static int io_open_chunk (int cachedir_fd, uint64_t chunk_no,
+                          uint64_t start_offs, uint64_t end_offs)
 {
   char name[17];
   int fd;
@@ -324,8 +325,9 @@ ERROR:
   return -1;
 }
 
-int io_read_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
-                   uint64_t start_offs, uint64_t end_offs, uint32_t *pos)
+static int io_read_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
+                          uint64_t start_offs, uint64_t end_offs,
+                          uint32_t *pos)
 {
   int fd, result = -1;
   int64_t len = end_offs - start_offs;
@@ -349,7 +351,7 @@ ERROR:
   return result;
 }
 
-int io_read_chunks (struct io_thread_arg *arg)
+static int io_read_chunks (struct io_thread_arg *arg)
 {
   uint64_t start_chunk, end_chunk, start_offs, end_offs;
   uint32_t pos = 0;
@@ -376,7 +378,7 @@ ERROR:
   return -1;
 }
 
-int io_write_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
+static int io_write_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
                     uint64_t start_offs, uint64_t end_offs, uint32_t *pos)
 {
   int fd, result = -1;
@@ -401,7 +403,7 @@ ERROR:
   return result;
 }
 
-int io_write_chunks (struct io_thread_arg *arg)
+static int io_write_chunks (struct io_thread_arg *arg)
 {
   uint64_t start_chunk, end_chunk, start_offs, end_offs;
   uint32_t pos = 0;
@@ -428,7 +430,7 @@ ERROR:
   return -1;
 }
 
-void *io_worker (void *arg0)
+static void *io_worker (void *arg0)
 {
   struct io_thread_arg *arg = (struct io_thread_arg*) arg0;
   int res;
@@ -497,7 +499,7 @@ ERROR:
   return NULL;
 }
 
-int get_device_by_name (char *devicename, struct device *dev)
+static int get_device_by_name (char *devicename, struct device *dev)
 {
   unsigned int i;
   int result;
@@ -516,8 +518,8 @@ int get_device_by_name (char *devicename, struct device *dev)
   return result;
 }
 
-int nbd_send_reply (int socket, uint32_t opt_type, uint32_t reply_type,
-                    char *reply_data)
+static int nbd_send_reply (int socket, uint32_t opt_type, uint32_t reply_type,
+                           char *reply_data)
 {
   uint32_t reply_len;
   int len, res;
@@ -555,7 +557,7 @@ int nbd_send_reply (int socket, uint32_t opt_type, uint32_t reply_type,
   return 0;
 }
 
-int nbd_send_devicelist (int socket, uint32_t opt_type)
+static int nbd_send_devicelist (int socket, uint32_t opt_type)
 {
   unsigned int i;
 
@@ -568,7 +570,8 @@ int nbd_send_devicelist (int socket, uint32_t opt_type)
   return nbd_send_reply(socket, opt_type, NBD_REP_ACK, NULL);
 }
 
-int nbd_send_device_info (int socket, struct device *dev, uint32_t flags)
+static int nbd_send_device_info (int socket, struct device *dev,
+                                 uint32_t flags)
 {
   uint64_t devsize;
   uint16_t devflags;
@@ -594,7 +597,7 @@ int nbd_send_device_info (int socket, struct device *dev, uint32_t flags)
   return 0;
 }
 
-int nbd_handshake (int socket, struct device *dev, char *clientname)
+static int nbd_handshake (int socket, struct device *dev, char *clientname)
 {
   uint32_t flags, opt_type, opt_len;
   char ihaveopt[8];
@@ -686,7 +689,7 @@ int nbd_handshake (int socket, struct device *dev, char *clientname)
   }
 }
 
-struct io_thread_arg *find_free_io_worker ()
+static struct io_thread_arg *find_free_io_worker ()
 {
   int res;
   unsigned int i, round;
@@ -717,8 +720,8 @@ struct io_thread_arg *find_free_io_worker ()
   }
 }
 
-void client_address (struct client_thread_arg *client, char *buffer,
-                     size_t bufsiz)
+static void client_address (struct client_thread_arg *client, char *buffer,
+                            size_t bufsiz)
 {
   char addr[INET6_ADDRSTRLEN];
   struct sockaddr_in *sin;
@@ -744,7 +747,7 @@ void client_address (struct client_thread_arg *client, char *buffer,
   }
 }
 
-int client_worker_loop (struct client_thread_arg *arg)
+static int client_worker_loop (struct client_thread_arg *arg)
 {
   fd_set rfds;
   struct timeval timeout;
@@ -824,7 +827,8 @@ ERROR:
   return result;
 }
 
-void *client_worker (void *arg0) {
+static void *client_worker (void *arg0)
+{
   struct client_thread_arg *arg = (struct client_thread_arg*) arg0;
   char clientname[INET6_ADDRSTRLEN + 8];
   int res;
@@ -877,19 +881,19 @@ ERROR:
   return NULL;
 }
 
-void sigterm_handler (int sig __attribute__((unused)))
+static void sigterm_handler (int sig __attribute__((unused)))
 {
   syslog(LOG_INFO, "SIGTERM received, going down...\n");
   running = 0;
 }
 
-void sighup_handler (int sig __attribute__((unused)))
+static void sighup_handler (int sig __attribute__((unused)))
 {
   syslog(LOG_INFO, "SIGHUP received, reloading configuration...\n");
   reload_config = 1;
 }
 
-void setup_signal (int sig, void (*handler)(int))
+static void setup_signal (int sig, void (*handler)(int))
 {
   struct sigaction sa;
 
@@ -899,7 +903,7 @@ void setup_signal (int sig, void (*handler)(int))
     err(1, "signal()");
 }
 
-void setup_signals ()
+static void setup_signals ()
 {
   sigset_t sigset;
 
@@ -916,7 +920,7 @@ void setup_signals ()
   setup_signal(SIGHUP, sighup_handler);
 }
 
-int create_listen_socket_inet (char *ip, char *port)
+static int create_listen_socket_inet (char *ip, char *port)
 {
   int listen_socket, yes, res;
   struct addrinfo hints, *result, *walk;
@@ -956,7 +960,7 @@ int create_listen_socket_inet (char *ip, char *port)
   return listen_socket;
 }
 
-int create_listen_socket_unix (char *ip)
+static int create_listen_socket_unix (char *ip)
 {
   int listen_socket;
   struct sockaddr_un sun;
@@ -977,7 +981,7 @@ int create_listen_socket_unix (char *ip)
   return listen_socket;
 }
 
-int create_listen_socket (char *ip, char *port)
+static int create_listen_socket (char *ip, char *port)
 {
   int listen_socket;
 
@@ -992,7 +996,7 @@ int create_listen_socket (char *ip, char *port)
   return listen_socket;
 }
 
-void show_help ()
+static void show_help ()
 {
   puts(
 "Usage:\n"
@@ -1011,7 +1015,7 @@ void show_help ()
 );
 }
 
-void launch_io_workers ()
+static void launch_io_workers ()
 {
   int i, res;
 
@@ -1036,7 +1040,7 @@ void launch_io_workers ()
   }
 }
 
-void join_io_workers ()
+static void join_io_workers ()
 {
   int i, res;
 
