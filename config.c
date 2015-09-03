@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
@@ -5,6 +7,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 
 #include "s3nbd.h"
 
@@ -142,4 +145,27 @@ ERROR1:
 
 ERROR:
   return result;
+}
+
+int save_pidfile (char *pidfile)
+{
+  FILE *fh;
+  char pid[16];
+  struct flock flk;
+
+  if ((fh = fopen(pidfile, "r+")) == NULL)
+    return -1;
+
+  fprintf(fh, "%u\n", getpid());
+
+  flk.l_type = F_WRLCK;
+  flk.l_whence = SEEK_SET;
+  flk.l_start = 0;
+  flk.l_len = strlen(pid);
+  flk.l_pid = 0;
+
+  if (fcntl(fileno(fh), F_OFD_SETLK, &flk) != 0)
+    return -1;
+ 
+  return 0;
 }

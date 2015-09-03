@@ -43,5 +43,6 @@ struct config {
 
 int load_config (char *configfile, struct config *cfg,
                  unsigned int *err_line, char **errstr);
+int save_pidfile (char *pidfile);
 
 #endif

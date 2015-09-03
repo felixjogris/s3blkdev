@@ -1023,16 +1023,13 @@ static void show_help ()
   puts(
 "Usage:\n"
 "\n"
-"s3nbd [-c <config file>] [-p <pid file>] [-f]\n"
+"s3nbd [-c <config file>] -p <pid file> [-f]\n"
 "s3nbd -h\n"
 "\n"
 "  -c <config file>    read config options from specified file instead of\n"
 "                      " DEFAULT_CONFIGFILE "\n"
-"\n"
 "  -p <pid file>       save pid to this file\n"
-"\n"
 "  -f                  run in foreground, don't daemonize\n"
-"\n"
 "  -h                  show this help ;-)\n"
 );
 }
@@ -1100,19 +1097,6 @@ static void daemonize ()
     err(1, "chdir(): /");
 }
 
-static void save_pidfile (char *pidfile)
-{
-  FILE *fh;
-
-  if ((fh = fopen(pidfile, "wx")) == NULL)
-    err(1, "fopen(): %s", pidfile);
-
-  fprintf(fh, "%u\n", getpid());
-
-  if (fclose(fh) != 0)
-    err(1, "fclose(): %s", pidfile);
-}
-
 int main (int argc, char **argv)
 {
 #define log_error(fmt, params ...) do { \
@@ -1133,12 +1117,15 @@ int main (int argc, char **argv)
       case 'f': foreground = 1; break;
       case 'h': show_help(); return 0;
       case 'p': pidfile = optarg; break;
-      default: errx(1, "Unknown option '%i'. Use -h for help.", res);
+      default: errx(1, "Unknown option '%i'. See -h for help.", res);
     }
   }
 
+  if (pidfile == NULL)
+    errx(1, "Need pidfile. See -h for help.");
+
   if (load_config(configfile, &cfg, &errline, &errstr) != 0)
-    errx(1, "cannot load config file %s: %s (line %i)",
+    errx(1, "Cannot load config file %s: %s (line %i)",
          configfile, errstr, errline);
 
   num_io_threads = cfg.num_io_threads;
@@ -1146,8 +1133,8 @@ int main (int argc, char **argv)
   if (!foreground)
     daemonize();
 
-  if (pidfile != NULL)
-    save_pidfile(pidfile);
+  if (save_pidfile(pidfile) != 0)
+    err(1, "Cannot save pidfile %s", pidfile);
 
   setup_signals();
   listen_socket = create_listen_socket(cfg.listen, cfg.port);
@@ -1212,7 +1199,7 @@ int main (int argc, char **argv)
   if ((cfg.listen[0] == '/') && (unlink(cfg.listen) != 0))
     log_error("unlink(): %s: %s", cfg.listen, strerror(errno));
 
-  if ((pidfile != NULL) && (unlink(pidfile) != 0))
+  if (unlink(pidfile) != 0)
     log_error("unlink(): %s: %s", pidfile, strerror(errno));
 
   syslog(LOG_INFO, "exiting...\n");

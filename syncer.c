@@ -272,12 +272,12 @@ static void show_help ()
   puts(
 "Usage:\n"
 "\n"
-"syncer [-c <config file>] [<max_used_pct> <min_used_pct>]\n"
+"syncer [-c <config file>] -p <pid file> [<max_used_pct> <min_used_pct>]\n"
 "syncer -h\n"
 "\n"
 "  -c <config file>    read config options from specified file instead of\n"
 "                      " DEFAULT_CONFIGFILE "\n"
-"\n"
+"  -p <pid file>       save pid to this file\n"
 "  -h                  show this help ;-)\n"
 );
 }
@@ -290,19 +290,24 @@ int main (int argc, char **argv)
   struct chunk_entry *chunks = NULL;
   enum { SYNCER, EVICTOR } mode;
   unsigned int min_used_pct = 100, max_used_pct = 100, errline, devnum;
-  char *configfile = DEFAULT_CONFIGFILE, *errstr;
+  char *configfile = DEFAULT_CONFIGFILE, *pidfile = NULL, *errstr;
   struct config cfg;
   struct device *dev;
 
   openlog("syncer", LOG_NDELAY|LOG_PID, LOG_DAEMON);
 
-  while ((res = getopt(argc, argv, "c:h")) != -1) {
+  while ((res = getopt(argc, argv, "c:f:hp:")) != -1) {
     switch (res) {
       case 'c': configfile = optarg; break;
+      case 'f': pidfile = optarg; break;
       case 'h': show_help(); return 0;
-      default: errdiex("Unknown option '%i'. Use -h for help.", res);
+      case 'p': pidfile = optarg; break;
+      default: errdiex("Unknown option '%i'. See -h for help.", res);
     }
   }
+
+  if (pidfile == NULL)
+    errdiex("Need pidfile. See -h for help.");
 
   switch (argc - optind) {
     case 0:
@@ -316,12 +321,15 @@ int main (int argc, char **argv)
         break;
       /* fall-thru */
     default:
-      errdiex("Wrong parameters. Use -h for help.");
+      errdiex("Wrong parameters. See -h for help.");
   }
 
   if (load_config(configfile, &cfg, &errline, &errstr) != 0)
-    errdiex("cannot load config file %s: %s (line %i)",
-           configfile, errstr, errline);
+    errdiex("Cannot load config file %s: %s (line %i)",
+            configfile, errstr, errline);
+
+  if (save_pidfile(pidfile) != 0)
+    errdie("Cannot save pidfile %s", pidfile);
 
   setup_signals();
 
@@ -358,6 +366,9 @@ int main (int argc, char **argv)
     free(chunks);
     chunks = NULL;
   }
+
+  if (unlink(pidfile) != 0)
+    errdie("unlink(): %s", pidfile);
 
   closelog();
 
