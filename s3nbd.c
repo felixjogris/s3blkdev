@@ -753,17 +753,19 @@ static void client_address (struct client_thread_arg *arg)
                htons(sin6->sin6_port));
       break;
     case AF_UNIX:
+      memset(&ucred, 0, sizeof(ucred));
       res = getsockopt(arg->socket, SOL_SOCKET, SCM_CREDENTIALS, &ucred, &len);
-      if (res == 0) {
+      if (res == 0)
         snprintf(arg->clientname, sizeof(arg->clientname),
                  "pid %u, uid %u, gid %u",
                  ucred.pid, ucred.uid, ucred.gid);
-        break;
-      }
-      /* fall-thru */
+      else
+        snprintf(arg->clientname, sizeof(arg->clientname),
+                 "<unix socket>");
+      break;
     default:
-      snprintf(arg->clientname, sizeof(arg->clientname), "%s",
-               "<unknown address family>");
+      snprintf(arg->clientname, sizeof(arg->clientname),
+               "<unknown address family %u>", arg->addr.sa_family);
       break;
   }
 }
