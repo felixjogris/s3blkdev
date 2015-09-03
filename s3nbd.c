@@ -918,7 +918,7 @@ static void setup_signals ()
     err(1, "sigdelset()");
 
   if (pthread_sigmask(SIG_SETMASK, &sigset, NULL) != 0)
-    err(1, "sigprocmask()");
+    err(1, "pthread_sigmask()");
 
   setup_signal(SIGTERM, sigterm_handler);
   setup_signal(SIGHUP, sighup_handler);

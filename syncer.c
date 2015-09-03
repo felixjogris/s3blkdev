@@ -8,22 +8,40 @@
 #include <errno.h>
 #include <string.h>
 #include <sys/statfs.h>
+#include <syslog.h>
+#include <signal.h>
 
 #define __USE_GNU
 #include <fcntl.h>
 
 #include "s3nbd.h"
 
-#define logwarnx(fmt, params ...) warnx("%s [%s:%i]: " fmt, \
-  __FUNCTION__, __FILE__, __LINE__, ## params)
+#define errdiex(fmt, params ...) { \
+  syslog(LOG_ERR, "%s [%s:%i]: " fmt "\n", \
+         __FUNCTION__, __FILE__, __LINE__, ## params); \
+  errx(1, "%s [%s:%i]: " fmt, \
+       __FUNCTION__, __FILE__, __LINE__, ## params); \
+} while (0)
 
-#define logwarn(fmt, params ...) warn("%s [%s:%i]: " fmt, \
-  __FUNCTION__, __FILE__, __LINE__, ## params)
+#define errdie(fmt, params ...) \
+  errdiex(fmt ": %s", ## params, strerror(errno))
+
+#define logwarnx(fmt, params ...) { \
+  syslog(LOG_WARNING, "%s [%s:%i]: " fmt "\n", \
+         __FUNCTION__, __FILE__, __LINE__, ## params); \
+  warnx("%s [%s:%i]: " fmt, \
+        __FUNCTION__, __FILE__, __LINE__, ## params); \
+} while (0)
+
+#define logwarn(fmt, params ...) \
+  logwarnx(fmt ": %s", ## params, strerror(errno))
 
 struct chunk_entry {
   time_t atime;
   char name[17];
 };
+
+int running = 1;
 
 char buf1[CHUNKSIZE], buf2[CHUNKSIZE];
 
@@ -106,7 +124,8 @@ static void sync_chunk (struct device *dev, char *name, int evict)
       goto ERROR4;
     }
 
-    printf("synced %s\n", name);
+    if (!evict)
+      syslog(LOG_INFO, "synced %s/%s\n", dev->cachedir, name);
   }
 
   if ((equal && (evict == 1)) || (evict == 2)) {
@@ -114,7 +133,8 @@ static void sync_chunk (struct device *dev, char *name, int evict)
       logwarn("unlinkat(): %s/%s", dev->cachedir, name);
       goto ERROR4;
     }
-    printf("evicted %s\n", name);
+
+    syslog(LOG_INFO, "evicted %s/%s\n", dev->cachedir, name);
     *name = '\0';
   }
 
@@ -171,7 +191,7 @@ static int read_cache_dir (char *cachedir, struct chunk_entry **chunks,
       size_chunks += 4096;
       *chunks = realloc(*chunks, sizeof(chunks[0]) * size_chunks);
       if (*chunks == NULL)
-        errx(1, "realloc() failed");
+        errdiex("realloc() failed");
     }
 
     (*chunks)[*num_chunks].atime = st.st_atim.tv_sec;
@@ -221,6 +241,32 @@ static int compare_atimes (const void *a0, const void *b0)
   return (a->atime < b->atime ? -1 : 1);
 }
 
+static void sigterm_handler (int sig __attribute__((unused)))
+{
+  syslog(LOG_INFO, "SIGTERM received, going down...\n");
+  running = 0;
+}
+
+static void setup_signals ()
+{
+  sigset_t sigset;
+  struct sigaction sa;
+
+  if (sigfillset(&sigset) != 0)
+    errdie("sigfillset()");
+
+  if ((sigdelset(&sigset, SIGTERM) != 0) || (sigdelset(&sigset, SIGHUP) != 0))
+    errdie("sigdelset()");
+
+  if (sigprocmask(SIG_SETMASK, &sigset, NULL) != 0)
+    errdie("sigprocmask()");
+
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = sigterm_handler;
+  if (sigaction(SIGTERM, &sa, NULL) != 0)
+    errdie("signal()");
+}
+
 static void show_help ()
 {
   puts(
@@ -248,11 +294,13 @@ int main (int argc, char **argv)
   struct config cfg;
   struct device *dev;
 
+  openlog("syncer", LOG_NDELAY|LOG_PID, LOG_DAEMON);
+
   while ((res = getopt(argc, argv, "c:h")) != -1) {
     switch (res) {
       case 'c': configfile = optarg; break;
       case 'h': show_help(); return 0;
-      default: errx(1, "Unknown option '%i'. Use -h for help.", res);
+      default: errdiex("Unknown option '%i'. Use -h for help.", res);
     }
   }
 
@@ -268,12 +316,14 @@ int main (int argc, char **argv)
         break;
       /* fall-thru */
     default:
-      errx(1, "Wrong parameters. Use -h for help.");
+      errdiex("Wrong parameters. Use -h for help.");
   }
 
   if (load_config(configfile, &cfg, &errline, &errstr) != 0)
-    errx(1, "cannot load config file %s: %s (line %i)",
-         configfile, errstr, errline);
+    errdiex("cannot load config file %s: %s (line %i)",
+           configfile, errstr, errline);
+
+  setup_signals();
 
   for (devnum = 0; devnum < cfg.num_devices; devnum++) {
     dev = &cfg.devs[devnum];
@@ -283,23 +333,21 @@ int main (int argc, char **argv)
 
     qsort(chunks, num_chunks, sizeof(chunks[0]), compare_atimes);
 
-    printf("cachedir %s contains %lu chunks\n",
-           dev->cachedir,  num_chunks);
-
     if (mode == SYNCER) {
-      for (l = num_chunks - 1; l >= 0; l--)
+      for (l = num_chunks - 1; (l >= 0) && running; l--)
         sync_chunk(dev, chunks[l].name, 0);
     } else if (eviction_needed(dev->cachedir, max_used_pct)) {
-      for (i = 0; i < num_chunks; i++) {
+      for (i = 0; (i < num_chunks) && running; i++) {
         if (eviction_needed(dev->cachedir, min_used_pct))
           sync_chunk(dev, chunks[i].name, 1);
         else
           break;
       }
 
-      for (i = 0; i < num_chunks; i++) {
+      for (i = 0; (i < num_chunks) && running; i++) {
         if (chunks[i].name[0] == '\0')
           continue;
+
         if (eviction_needed(dev->cachedir, min_used_pct))
           sync_chunk(dev, chunks[i].name, 2);
         else
@@ -310,6 +358,8 @@ int main (int argc, char **argv)
     free(chunks);
     chunks = NULL;
   }
+
+  closelog();
 
   return 0;
 }
