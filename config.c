@@ -149,22 +149,25 @@ ERROR:
 
 int save_pidfile (char *pidfile)
 {
-  FILE *fh;
+  int fd, len;
   char pid[16];
   struct flock flk;
 
-  if ((fh = fopen(pidfile, "r+")) == NULL)
+  fd = open(pidfile, O_CREAT|O_WRONLY, S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH);
+  if (fd < 0)
     return -1;
 
-  fprintf(fh, "%u\n", getpid());
+  len = snprintf(pid, sizeof(pid), "%u\n", getpid());
+  if (write(fd, pid, len) != len)
+    return -1;
 
   flk.l_type = F_WRLCK;
   flk.l_whence = SEEK_SET;
   flk.l_start = 0;
-  flk.l_len = strlen(pid);
+  flk.l_len = len;
   flk.l_pid = 0;
 
-  if (fcntl(fileno(fh), F_OFD_SETLK, &flk) != 0)
+  if (fcntl(fd, F_OFD_SETLK, &flk) != 0)
     return -1;
  
   return 0;
