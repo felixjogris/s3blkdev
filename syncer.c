@@ -17,9 +17,9 @@
 #include "s3nbd.h"
 
 #define errdiex(fmt, params ...) { \
-  syslog(LOG_ERR, "%s [%s:%i]: " fmt "\n", \
+  syslog(LOG_ERR, "%s (%s:%i): " fmt "\n", \
          __FUNCTION__, __FILE__, __LINE__, ## params); \
-  errx(1, "%s [%s:%i]: " fmt, \
+  errx(1, "%s (%s:%i): " fmt, \
        __FUNCTION__, __FILE__, __LINE__, ## params); \
 } while (0)
 
@@ -27,9 +27,9 @@
   errdiex(fmt ": %s", ## params, strerror(errno))
 
 #define logwarnx(fmt, params ...) { \
-  syslog(LOG_WARNING, "%s [%s:%i]: " fmt "\n", \
+  syslog(LOG_WARNING, "%s (%s:%i): " fmt "\n", \
          __FUNCTION__, __FILE__, __LINE__, ## params); \
-  warnx("%s [%s:%i]: " fmt, \
+  warnx("%s (%s:%i): " fmt, \
         __FUNCTION__, __FILE__, __LINE__, ## params); \
 } while (0)
 

@@ -21,7 +21,7 @@
 
 #include "s3nbd.h"
 
-#define logerr(fmt, params ...) syslog(LOG_ERR, "%s [%s:%i]: " fmt "\n", \
+#define logerr(fmt, params ...) syslog(LOG_ERR, "%s (%s:%i): " fmt "\n", \
   __FUNCTION__, __FILE__, __LINE__, ## params)
 
 #define NBD_BUFSIZE 1024
