@@ -113,7 +113,8 @@ static void sync_chunk (struct device *dev, char *name, int evict)
       goto ERROR3;
     }
 
-    store_fd = openat(storedir_fd, name, O_WRONLY|O_CREAT, S_IRUSR|S_IWUSR);
+    store_fd = openat(storedir_fd, name, O_WRONLY|O_CREAT,
+                      S_IRUSR|S_IWUSR|S_IRGRP);
     if (store_fd < 0) {
       logwarn("openat(): %s/%s", sdpath, name);
       goto ERROR3;

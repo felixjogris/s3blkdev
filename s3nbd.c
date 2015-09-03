@@ -260,7 +260,8 @@ static int io_open_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
   snprintf(name, sizeof(name), "%016llx", (unsigned long long) chunk_no);
 
   for (;;) {
-    fd = openat(arg->cachedir_fd, name, O_RDWR|O_CREAT, S_IRUSR|S_IWUSR);
+    fd = openat(arg->cachedir_fd, name, O_RDWR|O_CREAT,
+                S_IRUSR|S_IWUSR|S_IRGRP);
     if (fd < 0) {
       logerr("openat(): %s", strerror(errno));
       goto ERROR;
