@@ -1,11 +1,11 @@
+#define _GNU_SOURCE
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#include <err.h>
-
-#define __USE_GNU
 #include <fcntl.h>
+#include <err.h>
 
 #include "s3nbd.h"
 

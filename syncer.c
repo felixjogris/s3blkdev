@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdio.h>
@@ -10,8 +12,6 @@
 #include <sys/statfs.h>
 #include <syslog.h>
 #include <signal.h>
-
-#define __USE_GNU
 #include <fcntl.h>
 
 #include "s3nbd.h"

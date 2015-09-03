@@ -1,8 +1,10 @@
+#define _GNU_SOURCE
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>
 #include <sys/types.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
 #include <err.h>
 #include <netdb.h>
@@ -13,10 +15,8 @@
 #include <sys/select.h>
 #include <limits.h>
 #include <syslog.h>
-
-#define __USE_GNU
-#include <unistd.h>
 #include <fcntl.h>
+#include <sys/socket.h>
 #include <pthread.h>
 
 #include "s3nbd.h"
@@ -606,6 +606,7 @@ static int nbd_handshake (struct client_thread_arg *arg)
   uint32_t flags, opt_type, opt_len;
   char ihaveopt[8];
   uint16_t srv_flags;
+  int res;
 
   if (write_all(arg->socket, NBD_INIT_PASSWD, sizeof(NBD_INIT_PASSWD)) != 0)
     return -1;
@@ -680,14 +681,17 @@ static int nbd_handshake (struct client_thread_arg *arg)
           if (nbd_send_devicelist(arg->socket, opt_type) != 0)
             return -1;
         } else {
-          if (nbd_send_reply(arg->socket, opt_type, NBD_REP_ERR_INVALID, NULL) != 0)
+          res = nbd_send_reply(arg->socket, opt_type, NBD_REP_ERR_INVALID,
+                               NULL);
+          if (res != 0)
             return -1;
         }
         break;
 
       default:
         logerr("client %s unknown opt_type %u", arg->clientname, opt_type);
-        if (nbd_send_reply(arg->socket, opt_type, NBD_REP_ERR_UNSUP, NULL) != 0)
+        res = nbd_send_reply(arg->socket, opt_type, NBD_REP_ERR_UNSUP, NULL);
+        if (res != 0)
           return -1;
         break;
     }
@@ -730,6 +734,9 @@ static void client_address (struct client_thread_arg *arg)
   char addr[INET6_ADDRSTRLEN];
   struct sockaddr_in *sin;
   struct sockaddr_in6 *sin6;
+  struct ucred ucred;
+  socklen_t len;
+  int res;
 
   switch (arg->addr.sa_family) {
     case AF_INET:
@@ -745,6 +752,15 @@ static void client_address (struct client_thread_arg *arg)
                          sizeof(addr)),
                htons(sin6->sin6_port));
       break;
+    case AF_UNIX:
+      res = getsockopt(arg->socket, SOL_SOCKET, SCM_CREDENTIALS, &ucred, &len);
+      if (res == 0) {
+        snprintf(arg->clientname, sizeof(arg->clientname),
+                 "pid %u, uid %u, gid %u",
+                 ucred.pid, ucred.uid, ucred.gid);
+        break;
+      }
+      /* fall-thru */
     default:
       snprintf(arg->clientname, sizeof(arg->clientname), "%s",
                "<unknown address family>");
@@ -1078,9 +1094,6 @@ static void daemonize ()
   if (setsid() == -1)
     err(1, "setsid()");
 
-  if (setpgrp() != 0)
-    err(1, "setpgrp()");
-
   if (chdir("/"))
     err(1, "chdir(): /");
 }
@@ -1188,10 +1201,16 @@ int main (int argc, char **argv)
 
   running = 0;
 
+  if (close(listen_socket) != 0)
+    log_error("close(): %s", strerror(errno));
+
   syslog(LOG_INFO, "waiting for I/O workers...\n");
   join_io_workers();
 
-  if (unlink(pidfile) != 0)
+  if ((cfg.listen[0] == '/') && (unlink(cfg.listen) != 0))
+    log_error("unlink(): %s: %s", cfg.listen, strerror(errno));
+
+  if ((pidfile != NULL) && (unlink(pidfile) != 0))
     log_error("unlink(): %s: %s", pidfile, strerror(errno));
 
   syslog(LOG_INFO, "exiting...\n");
