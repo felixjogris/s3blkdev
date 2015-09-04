@@ -4,6 +4,18 @@
 #include <limits.h>
 #include <netinet/in.h>
 #include <time.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#ifndef F_OFD_GETLK
+#  define F_OFD_GETLK 36
+#endif
+#ifndef F_OFD_SETLK
+#  define F_OFD_SETLK 37
+#endif
+#ifndef F_OFD_SETLKW
+#  define F_OFD_SETLKW 38
+#endif
 
 #define CHUNKSIZE (8 * 1024 * 1024)
 

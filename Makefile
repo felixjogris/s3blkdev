@@ -7,7 +7,7 @@ TARGETS=s3nbd locktool syncer
 all:	$(TARGETS)
 
 s3nbd:	s3nbd.o config.o
-	$(CC) $(LDFLAGS) $(LIBS) -o $@ $^
+	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
 
 syncer:	syncer.o config.o
 	$(CC) $(LDFLAGS) -o $@ $^
