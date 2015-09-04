@@ -190,7 +190,7 @@ static int read_cache_dir (char *cachedir, struct chunk_entry **chunks,
 
     if (*num_chunks >= size_chunks) {
       size_chunks += 4096;
-      *chunks = realloc(*chunks, sizeof(chunks[0]) * size_chunks);
+      *chunks = realloc(*chunks, sizeof(struct chunk_entry) * size_chunks);
       if (*chunks == NULL)
         errdiex("realloc() failed");
     }
