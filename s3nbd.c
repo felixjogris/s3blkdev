@@ -17,6 +17,8 @@
 #include <syslog.h>
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/resource.h>
 #include <pthread.h>
 
 #include "s3nbd.h"
@@ -120,9 +122,9 @@ static int fetch_chunk (char *devicename, int fd, char *name)
 {
   int storedir_fd, store_fd, result = -1, res;
   unsigned int i;
-  char sdpath[PATH_MAX], buffer[CHUNKSIZE], buffer2[2 * CHUNKSIZE];
+  char sdpath[PATH_MAX], uncompbuf[CHUNKSIZE], compbuf[COMPR_CHUNKSIZE];
   struct stat st;
-  size_t rawlen;
+  size_t uncomplen;
 
   snprintf(sdpath, sizeof(sdpath), "/var/tmp/%s.store", devicename);
 
@@ -137,10 +139,10 @@ static int fetch_chunk (char *devicename, int fd, char *name)
       goto ERROR1;
     }
 
-    memset(buffer, 0, sizeof(buffer));
+    memset(uncompbuf, 0, sizeof(uncompbuf));
 
-    for (i = 0; i < CHUNKSIZE/sizeof(buffer); i++) {
-      if (write_all(fd, buffer, sizeof(buffer)) != 0)
+    for (i = 0; i < CHUNKSIZE/sizeof(uncompbuf); i++) {
+      if (write_all(fd, uncompbuf, sizeof(uncompbuf)) != 0)
         goto ERROR1;
     }
 
@@ -151,26 +153,26 @@ static int fetch_chunk (char *devicename, int fd, char *name)
       goto ERROR1;
     }
 
-//    for (i = 0; i < CHUNKSIZE/sizeof(buffer); i++) {
-      if (read_all(store_fd, buffer2, st.st_size) != 0)
+    for (i = 0; i < CHUNKSIZE/sizeof(uncompbuf); i++) {
+      if (read_all(store_fd, compbuf, st.st_size) != 0)
         goto ERROR2;
 
-    rawlen = sizeof(buffer);
-    res = snappy_uncompress(buffer2, st.st_size, buffer, &rawlen);
-    if (res != SNAPPY_OK) {
-      logerr("snappy_uncompress(): %s/%s: %i %lu %lu",
-             sdpath, name, res, st.st_size, rawlen);
-      goto ERROR2;
-    }
-    if (rawlen != CHUNKSIZE) {
-      logerr("snappy_uncompress(): %s/%s: rawlen %lu, expected %u",
-             sdpath, name, rawlen, CHUNKSIZE);
-      goto ERROR2;
-    }
-
-      if (write_all(fd, buffer, rawlen) != 0)
+      uncomplen = sizeof(uncompbuf);
+      res = snappy_uncompress(compbuf, st.st_size, uncompbuf, &uncomplen);
+      if (res != SNAPPY_OK) {
+        logerr("snappy_uncompress(): %s/%s: %i %lu %lu",
+               sdpath, name, res, st.st_size, uncomplen);
         goto ERROR2;
-//    }
+      }
+      if (uncomplen != CHUNKSIZE) {
+        logerr("snappy_uncompress(): %s/%s: uncomplen %lu, expected %u",
+               sdpath, name, uncomplen, CHUNKSIZE);
+        goto ERROR2;
+      }
+
+      if (write_all(fd, uncompbuf, uncomplen) != 0)
+        goto ERROR2;
+    }
 
     result = 0;
 
@@ -1064,7 +1066,7 @@ static void launch_io_workers ()
   if ((res = pthread_attr_init(&thread_attr)) != 0)
     errx(1, "pthread_attr_init(): %s", strerror(res));
 
-  res = pthread_attr_setstacksize(&thread_attr, 4 * CHUNKSIZE);
+  res = pthread_attr_setstacksize(&thread_attr, 3 * CHUNKSIZE);
   if (res != 0)
     errx(1, "pthread_attr_setstacksize(): %s", strerror(res));
 
@@ -1108,6 +1110,19 @@ static void join_io_workers ()
       syslog(LOG_ERR, "pthread_cond_destroy(): %s", strerror(res));
     free(io_threads[i].buffer);
   }
+}
+
+static void increase_stacksize ()
+{
+  struct rlimit rl;
+
+  if (getrlimit(RLIMIT_STACK, &rl) != 0)
+    err(1, "getrlimit()");
+
+  rl.rlim_cur = 4 * CHUNKSIZE;
+
+  if (setrlimit(RLIMIT_STACK, &rl) != 0)
+    err(1, "setrlimit()");
 }
 
 static void daemonize ()
@@ -1166,6 +1181,7 @@ int main (int argc, char **argv)
   if (save_pidfile(pidfile) != 0)
     err(1, "Cannot save pidfile %s", pidfile);
 
+  increase_stacksize();
   setup_signals();
   listen_socket = create_listen_socket(cfg.listen, cfg.port);
   launch_io_workers();

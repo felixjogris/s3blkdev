@@ -44,7 +44,7 @@ struct chunk_entry {
 
 int running = 1;
 
-char buf1[CHUNKSIZE], buf2[2 * CHUNKSIZE], buf3[2 * CHUNKSIZE];
+char buf[COMPR_CHUNKSIZE], compbuf[COMPR_CHUNKSIZE];
 
 static void sync_chunk (struct device *dev, char *name, int evict)
 {
@@ -77,23 +77,24 @@ static void sync_chunk (struct device *dev, char *name, int evict)
     goto ERROR2;
   }
 
-  if (fstatat(dir_fd, name, &st, 0) != 0) {
-    logwarn("fstatat(): %s/%s", dev->cachedir, name);
+  if (fstat(fd, &st) != 0) {
+    logwarn("fstat(): %s/%s", dev->cachedir, name);
     goto ERROR2;
   }
 
   if (st.st_size != CHUNKSIZE) {
-    logwarnx("%s/%s: filesize != CHUNKSIZE", dev->cachedir, name);
+    logwarnx("%s/%s: filesize %lu != CHUNKSIZE",
+             dev->cachedir, name, st.st_size);
     goto ERROR2;
   }
 
-  if (read(fd, buf1, sizeof(buf1)) != sizeof(buf1)) {
+  if (read(fd, buf, CHUNKSIZE) != CHUNKSIZE) {
     logwarn("read(): %s/%s", dev->cachedir, name);
     goto ERROR2;
   }
 
-  comprlen = sizeof(buf3);
-  res = snappy_compress(buf1, sizeof(buf1), buf3, &comprlen);
+  comprlen = sizeof(compbuf);
+  res = snappy_compress(buf, CHUNKSIZE, compbuf, &comprlen);
   if (res != SNAPPY_OK) {
     logwarnx("snappy_compress(): %s/%s: %i", dev->cachedir, name, res);
     goto ERROR2;
@@ -112,12 +113,12 @@ static void sync_chunk (struct device *dev, char *name, int evict)
   } else if (fstat(store_fd, &st) != 0) {
     logwarn("fstat(): %s/%s", sdpath, name);
     goto ERROR4;
-  } else if (read(store_fd, buf2, st.st_size) != st.st_size) {
+  } else if (read(store_fd, buf, st.st_size) != st.st_size) {
     logwarn("read(): %s/%s", sdpath, name);
     goto ERROR4;
   } else {
     equal = ((st.st_size == (ssize_t) comprlen) &&
-             (memcmp(buf3, buf2, comprlen) == 0));
+             (memcmp(buf, compbuf, comprlen) == 0));
   }
 
   if (!equal && (evict != 1)) {
@@ -133,7 +134,7 @@ static void sync_chunk (struct device *dev, char *name, int evict)
       goto ERROR3;
     }
 
-    if (write(store_fd, buf3, comprlen) != (ssize_t) comprlen) {
+    if (write(store_fd, compbuf, comprlen) != (ssize_t) comprlen) {
       logwarn("write(): %s/%s", sdpath, name);
       goto ERROR4;
     }

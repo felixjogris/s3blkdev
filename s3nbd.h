@@ -18,6 +18,7 @@
 #endif
 
 #define CHUNKSIZE (8 * 1024 * 1024)
+#define COMPR_CHUNKSIZE (CHUNKSIZE + CHUNKSIZE/4)
 
 #define DEFAULT_CONFIGFILE "/etc/s3nbd.conf"
 #define MAX_IO_THREADS 128
