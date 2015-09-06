@@ -158,8 +158,6 @@ int save_pidfile (char *pidfile)
     return -1;
 
   len = snprintf(pid, sizeof(pid), "%u\n", getpid());
-  if (write(fd, pid, len) != len)
-    return -1;
 
   flk.l_type = F_WRLCK;
   flk.l_whence = SEEK_SET;
@@ -170,5 +168,8 @@ int save_pidfile (char *pidfile)
   if (fcntl(fd, F_OFD_SETLK, &flk) != 0)
     return -1;
  
+  if (write(fd, pid, len) != len)
+    return -1;
+
   return 0;
 }

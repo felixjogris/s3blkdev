@@ -15,6 +15,7 @@
 #include <fcntl.h>
 
 #include "s3nbd.h"
+#include "snappy-c.h"
 
 #define errdiex(fmt, params ...) { \
   syslog(LOG_ERR, "%s (%s:%i): " fmt "\n", \
@@ -43,14 +44,15 @@ struct chunk_entry {
 
 int running = 1;
 
-char buf1[CHUNKSIZE], buf2[CHUNKSIZE];
+char buf1[CHUNKSIZE], buf2[2 * CHUNKSIZE], buf3[2 * CHUNKSIZE];
 
 static void sync_chunk (struct device *dev, char *name, int evict)
 {
-  int dir_fd, fd, storedir_fd, store_fd, equal;
+  int dir_fd, fd, storedir_fd, store_fd, equal, res;
   struct flock flk;
   struct stat st;
   char sdpath[PATH_MAX];
+  size_t comprlen;
 
   dir_fd = open(dev->cachedir, O_RDONLY|O_DIRECTORY);
   if (dir_fd < 0) {
@@ -90,6 +92,13 @@ static void sync_chunk (struct device *dev, char *name, int evict)
     goto ERROR2;
   }
 
+  comprlen = sizeof(buf3);
+  res = snappy_compress(buf1, sizeof(buf1), buf3, &comprlen);
+  if (res != SNAPPY_OK) {
+    logwarnx("snappy_compress(): %s/%s: %i", dev->cachedir, name, res);
+    goto ERROR2;
+  }
+
 /* TODO */
   snprintf(sdpath, sizeof(sdpath), "/var/tmp/%s.store", dev->name);
   if ((storedir_fd = open(sdpath, O_RDONLY|O_DIRECTORY)) < 0) {
@@ -100,11 +109,15 @@ static void sync_chunk (struct device *dev, char *name, int evict)
   store_fd = openat(storedir_fd, name, O_RDONLY);
   if (store_fd < 0) {
     equal = 0;
-  } else if (read(store_fd, buf2, sizeof(buf2)) != sizeof(buf2)) {
+  } else if (fstat(store_fd, &st) != 0) {
+    logwarn("fstat(): %s/%s", sdpath, name);
+    goto ERROR4;
+  } else if (read(store_fd, buf2, st.st_size) != st.st_size) {
     logwarn("read(): %s/%s", sdpath, name);
     goto ERROR4;
   } else {
-    equal = (memcmp(buf1, buf2, sizeof(buf1)) == 0);
+    equal = ((st.st_size == (ssize_t) comprlen) &&
+             (memcmp(buf3, buf2, comprlen) == 0));
   }
 
   if (!equal && (evict != 1)) {
@@ -113,14 +126,14 @@ static void sync_chunk (struct device *dev, char *name, int evict)
       goto ERROR3;
     }
 
-    store_fd = openat(storedir_fd, name, O_WRONLY|O_CREAT,
+    store_fd = openat(storedir_fd, name, O_WRONLY|O_CREAT|O_TRUNC,
                       S_IRUSR|S_IWUSR|S_IRGRP);
     if (store_fd < 0) {
       logwarn("openat(): %s/%s", sdpath, name);
       goto ERROR3;
     }
 
-    if (write(store_fd, buf1, sizeof(buf1)) != sizeof(buf1)) {
+    if (write(store_fd, buf3, comprlen) != (ssize_t) comprlen) {
       logwarn("write(): %s/%s", sdpath, name);
       goto ERROR4;
     }

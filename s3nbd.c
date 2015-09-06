@@ -20,6 +20,7 @@
 #include <pthread.h>
 
 #include "s3nbd.h"
+#include "snappy-c.h"
 
 #define logerr(fmt, params ...) syslog(LOG_ERR, "%s (%s:%i): " fmt "\n", \
   __FUNCTION__, __FILE__, __LINE__, ## params)
@@ -117,20 +118,22 @@ static ssize_t write_all (int fd, const void *buffer, size_t len)
 /* TODO */
 static int fetch_chunk (char *devicename, int fd, char *name)
 {
-  int storedir_fd, store_fd, result = -1;
+  int storedir_fd, store_fd, result = -1, res;
   unsigned int i;
-  char buffer[4096];
+  char sdpath[PATH_MAX], buffer[CHUNKSIZE], buffer2[2 * CHUNKSIZE];
+  struct stat st;
+  size_t rawlen;
 
-  snprintf(buffer, sizeof(buffer), "/var/tmp/%s.store", devicename);
+  snprintf(sdpath, sizeof(sdpath), "/var/tmp/%s.store", devicename);
 
-  if ((storedir_fd = open(buffer, O_RDONLY|O_DIRECTORY)) < 0) {
-    logerr("open(): %s: %s", buffer, strerror(errno));
+  if ((storedir_fd = open(sdpath, O_RDONLY|O_DIRECTORY)) < 0) {
+    logerr("open(): %s: %s", sdpath, strerror(errno));
     goto ERROR;
   }
 
   if ((store_fd = openat(storedir_fd, name, O_RDONLY)) < 0) {
     if (errno != ENOENT) {
-      logerr("openat(): %s", strerror(errno));
+      logerr("openat(): %s/%s: %s", sdpath, name, strerror(errno));
       goto ERROR1;
     }
 
@@ -143,13 +146,31 @@ static int fetch_chunk (char *devicename, int fd, char *name)
 
     result = 0;
   } else {
-    for (i = 0; i < CHUNKSIZE/sizeof(buffer); i++) {
-      if (read_all(store_fd, buffer, sizeof(buffer)) != 0)
+    if (fstat(store_fd, &st) != 0) {
+      logerr("fstat(): %s/%s: %s", sdpath, name, strerror(errno));
+      goto ERROR1;
+    }
+
+//    for (i = 0; i < CHUNKSIZE/sizeof(buffer); i++) {
+      if (read_all(store_fd, buffer2, st.st_size) != 0)
         goto ERROR2;
 
-      if (write_all(fd, buffer, sizeof(buffer)) != 0)
-        goto ERROR2;
+    rawlen = sizeof(buffer);
+    res = snappy_uncompress(buffer2, st.st_size, buffer, &rawlen);
+    if (res != SNAPPY_OK) {
+      logerr("snappy_uncompress(): %s/%s: %i %lu %lu",
+             sdpath, name, res, st.st_size, rawlen);
+      goto ERROR2;
     }
+    if (rawlen != CHUNKSIZE) {
+      logerr("snappy_uncompress(): %s/%s: rawlen %lu, expected %u",
+             sdpath, name, rawlen, CHUNKSIZE);
+      goto ERROR2;
+    }
+
+      if (write_all(fd, buffer, rawlen) != 0)
+        goto ERROR2;
+//    }
 
     result = 0;
 
@@ -1038,6 +1059,14 @@ static void show_help ()
 static void launch_io_workers ()
 {
   int i, res;
+  pthread_attr_t thread_attr;
+
+  if ((res = pthread_attr_init(&thread_attr)) != 0)
+    errx(1, "pthread_attr_init(): %s", strerror(res));
+
+  res = pthread_attr_setstacksize(&thread_attr, 4 * CHUNKSIZE);
+  if (res != 0)
+    errx(1, "pthread_attr_setstacksize(): %s", strerror(res));
 
   for (i = 0; i < num_io_threads; i++) {
     io_threads[i].busy = 1;
@@ -1053,7 +1082,7 @@ static void launch_io_workers ()
     if ((res = pthread_mutex_init(&io_threads[i].wakeup_mtx, NULL)) != 0)
       errx(1, "pthread_mutex_init(): %s", strerror(res));
 
-    res = pthread_create(&io_threads[i].thread, NULL, &io_worker,
+    res = pthread_create(&io_threads[i].thread, &thread_attr, &io_worker,
                          &io_threads[i]);
     if (res != 0)
       errx(1, "pthread_create(): %s", strerror(res));

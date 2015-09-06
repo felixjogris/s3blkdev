@@ -1,18 +1,17 @@
 CFLAGS=-W -Wall -O3 -pipe
 LDFLAGS=-s
-LIBS=-lpthread
 
 TARGETS=s3nbd locktool syncer
 
 all:	$(TARGETS)
 
 s3nbd:	s3nbd.o config.o
-	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
+	$(CC) $(LDFLAGS) -o $@ $^ -lsnappy -lpthread
 
 syncer:	syncer.o config.o
-	$(CC) $(LDFLAGS) -o $@ $^
+	$(CC) $(LDFLAGS) -o $@ $^ -lsnappy
 
-locktool:	locktool.o config.o
+locktool:	locktool.o
 	$(CC) $(LDFLAGS) -o $@ $^
 
 %.o:	%.c s3nbd.h
