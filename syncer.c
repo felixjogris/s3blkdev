@@ -139,8 +139,7 @@ static void sync_chunk (struct device *dev, char *name, int evict)
       goto ERROR4;
     }
 
-    if (!evict)
-      syslog(LOG_INFO, "synced %s/%s\n", dev->cachedir, name);
+    syslog(LOG_INFO, "synced %s/%s\n", dev->cachedir, name);
   }
 
   if ((equal && (evict == 1)) || (evict == 2)) {
