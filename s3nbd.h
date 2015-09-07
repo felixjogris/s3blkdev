@@ -38,7 +38,7 @@ struct config {
     struct sockaddr_in6 sin6;
   } s3addrs[16];
   unsigned short num_s3hosts;
-  unsigned short s3ports[4];
+  char s3ports[4][8];
   unsigned short num_s3ports;
   unsigned char s3ssl;
   char s3accesskey[128];

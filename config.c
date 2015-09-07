@@ -41,7 +41,7 @@ int load_config (char *configfile, struct config *cfg,
   struct config newcfg;
   FILE *fh;
   int result = -1, in_device = 0;
-  char line[1024], devname[DEVNAME_SIZE];
+  char line[1024], tmp[256];
 
   *err_line = 0;
 
@@ -84,36 +84,47 @@ int load_config (char *configfile, struct config *cfg,
     }
 
     if (sscanf(line, " listen %127s", newcfg.listen) ||
-        sscanf(line, " port %7s", newcfg.port))
+        sscanf(line, " port %7[0-9]", newcfg.port) ||
+        sscanf(line, " workers %hu", &newcfg.num_io_threads) ||
+        sscanf(line, " fetchers %hu", &newcfg.num_s3_fetchers) ||
+        sscanf(line, " s3ssl %hhu", &newcfg.s3ssl) ||
+        sscanf(line, " s3accesskey %127s", newcfg.s3accesskey) ||
+        sscanf(line, " s3secretkey %127s", newcfg.s3secretkey))
       continue;
 
-    if (sscanf(line, " workers %hu", &newcfg.num_io_threads)) {
-      if (newcfg.num_io_threads == 0) {
-        *errstr = "number of workers must not be zero";
+    if (sscanf(line, " s3host %255s", tmp)) {
+      if (newcfg.num_s3hosts >= sizeof(newcfg.s3hosts)/sizeof(newcfg.s3hosts[0])) {
+        *errstr = "too many S3 hosts";
         goto ERROR1;
       }
-      if (newcfg.num_io_threads >= MAX_IO_THREADS) {
-        *errstr = "number of workers too large (max. " STR(MAX_IO_THREADS) ")";
-        goto ERROR1;
-      }
-      continue;
-    }
 
-    if (sscanf(line, " fetchers %hu", &newcfg.num_s3_fetchers)) {
-      if (newcfg.num_s3_fetchers == 0) {
-        *errstr = "number of fetchers must not be zero";
-        goto ERROR1;
-      }
+      strncpy(newcfg.s3hosts[newcfg.num_s3hosts], tmp,
+              sizeof(newcfg.s3hosts[0]));
+      newcfg.num_s3hosts++;
+
       continue;
     }
 
-    if (sscanf(line, " [%63[^]]", devname)) {
+    if (sscanf(line, " s3port %7[0-9]", tmp)) {
+      if (newcfg.num_s3ports >= sizeof(newcfg.s3ports)/sizeof(newcfg.s3ports[0])) {
+        *errstr = "too many S3 ports";
+        goto ERROR1;
+      }
+
+      strncpy(newcfg.s3ports[newcfg.num_s3ports], tmp,
+              sizeof(newcfg.s3ports[0]));
+      newcfg.num_s3ports++;
+
+      continue;
+    }
+
+    if (sscanf(line, " [%63[^]]", tmp)) {
       if (newcfg.num_devices >= sizeof(newcfg.devs)/sizeof(newcfg.devs[0])) {
         *errstr = "too many devices";
         goto ERROR1;
       }
 
-      strncpy(newcfg.devs[newcfg.num_devices].name, devname,
+      strncpy(newcfg.devs[newcfg.num_devices].name, tmp,
               sizeof(newcfg.devs[0].name));
       in_device = 1;
 
@@ -126,6 +137,60 @@ int load_config (char *configfile, struct config *cfg,
 
   if (in_device) {
     *errstr = "incomplete device configuration";
+    goto ERROR1;
+  }
+
+  if (newcfg.listen[0] == '\0') {
+    *errstr = "no or empty listen statement";
+    goto ERROR1;
+  }
+
+  if (newcfg.port[0] == '\0') {
+    *errstr = "no or empty port statement";
+    goto ERROR1;
+  }
+
+  if (newcfg.num_io_threads == 0) {
+    *errstr = "number of workers must not be zero";
+    goto ERROR1;
+  }
+
+  if (newcfg.num_io_threads >= MAX_IO_THREADS) {
+    *errstr = "number of workers too large (max. " STR(MAX_IO_THREADS) ")";
+    goto ERROR1;
+  }
+
+  if (newcfg.num_s3_fetchers == 0) {
+    *errstr = "number of fetchers must not be zero";
+    goto ERROR1;
+  }
+
+  if (newcfg.num_s3_fetchers > newcfg.num_io_threads) {
+    *errstr = "number of fetchers must not exceed number of workers";
+    goto ERROR1;
+  }
+
+  if (newcfg.num_s3hosts == 0) {
+    *errstr = "no s3hosts";
+    goto ERROR1;
+  }
+
+  if (newcfg.num_s3ports == 0) {
+    if (!newcfg.s3ssl) {
+      *errstr = "no s3ports and s3ssl not set";
+      goto ERROR1;
+    }
+    newcfg.num_s3ports = 1;
+    strcpy(newcfg.s3ports[0], "443");
+  }
+
+  if (newcfg.s3accesskey[0] == '\0') {
+    *errstr = "no or empty s3accesskey statement";
+    goto ERROR1;
+  }
+
+  if (newcfg.s3secretkey[0] == '\0') {
+    *errstr = "no or empty s3secretkey statement";
     goto ERROR1;
   }
 
