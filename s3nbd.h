@@ -36,7 +36,8 @@ struct s3connection {
   char *port;
   int sock;
   int is_ssl;
-  gnutls_session_t sslctx;
+  gnutls_session_t tls_sess;
+  gnutls_certificate_credentials_t tls_cred;
   pthread_mutex_t mtx;
 };
 
@@ -64,5 +65,7 @@ struct config {
 int load_config (char *configfile, struct config *cfg,
                  unsigned int *err_line, char **errstr);
 int save_pidfile (char *pidfile);
+struct s3connection *get_s3_conn (struct config *cfg, unsigned int *num);
+void release_s3_conn (struct s3connection *conn, int error);
 
 #endif

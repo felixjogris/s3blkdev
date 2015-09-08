@@ -11,12 +11,15 @@ s3nbd:	s3nbd.o config.o
 syncer:	syncer.o config.o
 	$(CC) $(LDFLAGS) -o $@ $^ -lsnappy -lgnutls -lpthread
 
+test:	test.o config.o
+	$(CC) $(LDFLAGS) -o $@ $^ -lsnappy -lgnutls -lpthread
+
 locktool:	locktool.o
 	$(CC) $(LDFLAGS) -o $@ $^
 
 %.o:	%.c s3nbd.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-clean:	; -rm *.o $(TARGETS)
+clean:	; -rm *.o $(TARGETS) test
 
 .PHONY:	all clean

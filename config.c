@@ -50,8 +50,11 @@ int load_config (char *configfile, struct config *cfg,
   *err_line = 0;
 
   memset(cfg, 0, sizeof(*cfg));
-  for (i = 0; i < sizeof(cfg->s3conns)/sizeof(cfg->s3conns[0]); i++)
+  for (i = 0; i < sizeof(cfg->s3conns)/sizeof(cfg->s3conns[0]); i++) {
     cfg->s3conns[i].sock = -1;
+    if (pthread_mutex_init(&cfg->s3conns[i].mtx, NULL) != 0)
+      goto ERROR;
+  }
 
   if ((fh = fopen(configfile, "r")) == NULL) {
     *errstr = strerror(errno);
@@ -141,6 +144,8 @@ int load_config (char *configfile, struct config *cfg,
     *errstr = "incomplete device configuration";
     goto ERROR1;
   }
+
+  *err_line = 0;
 
   if (cfg->listen[0] == '\0') {
     *errstr = "no or empty listen statement";
@@ -277,29 +282,48 @@ static int setup_s3_ssl (struct s3connection *conn)
 {
   int res;
 
-  if (gnutls_init(&conn->sslctx, GNUTLS_CLIENT) != GNUTLS_E_SUCCESS)
+  if (gnutls_init(&conn->tls_sess, GNUTLS_CLIENT) != GNUTLS_E_SUCCESS)
     return -1;
 
+  res = gnutls_set_default_priority(conn->tls_sess);
+  if (res != GNUTLS_E_SUCCESS)
+    goto ERROR1;
+
+  res = gnutls_certificate_allocate_credentials(&conn->tls_cred);
+  if (res != GNUTLS_E_SUCCESS)
+    goto ERROR1;
+
+  res = gnutls_credentials_set(conn->tls_sess, GNUTLS_CRD_CERTIFICATE,
+                               conn->tls_cred);
+  if (res != GNUTLS_E_SUCCESS)
+    goto ERROR2;
+
+  gnutls_transport_set_int(conn->tls_sess, conn->sock);
 #if 0
-  gnutls_transport_set_pull_timeout_function(conn->sslctx,
+  gnutls_transport_set_pull_timeout_function(conn->tls_sess,
                                              gnutls_system_recv_timeout);
 #endif
-  gnutls_handshake_set_timeout(conn->sslctx, GNUTLS_DEFAULT_HANDSHAKE_TIMEOUT);
-  gnutls_record_set_timeout(conn->sslctx, 10000);
-  gnutls_transport_set_int(conn->sslctx, conn->sock);
+  gnutls_handshake_set_timeout(conn->tls_sess, GNUTLS_DEFAULT_HANDSHAKE_TIMEOUT);
+  gnutls_record_set_timeout(conn->tls_sess, 10000);
 
   for (;;) {
-    res = gnutls_handshake(conn->sslctx);
+    res = gnutls_handshake(conn->tls_sess);
     if (res == GNUTLS_E_SUCCESS)
       break;
 
-    if (gnutls_error_is_fatal(res) != 0) {
-      gnutls_deinit(conn->sslctx);
-      return -1;
-    }
+    if (gnutls_error_is_fatal(res) != 0)
+      goto ERROR2;
   }
 
   conn->is_ssl = 1;
+
+  return 0;
+
+ERROR2:
+  gnutls_certificate_free_credentials(conn->tls_cred);
+
+ERROR1:
+  gnutls_deinit(conn->tls_sess);
 
   return 0;
 }
@@ -351,8 +375,10 @@ struct s3connection *get_s3_conn (struct config *cfg, unsigned int *num)
 void release_s3_conn (struct s3connection *conn, int error)
 {
   if (error != 0) {
-    if (conn->is_ssl != 0)
-      gnutls_deinit(conn->sslctx);
+    if (conn->is_ssl != 0) {
+      gnutls_certificate_free_credentials(conn->tls_cred);
+      gnutls_deinit(conn->tls_sess);
+    }
 
     close(conn->sock);
     conn->sock = -1;
