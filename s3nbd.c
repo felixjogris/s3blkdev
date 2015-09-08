@@ -53,12 +53,12 @@ const char const NBD_OPTS_REPLY_MAGIC[] = { 0x00, 0x03, 0xe8, 0x89,
                                             0x04, 0x55, 0x65, 0xa9 };
 
 struct client_thread_arg {
-  int socket;
   struct sockaddr addr;
   socklen_t addr_len;
-  pthread_mutex_t socket_mtx;
   char clientname[INET6_ADDRSTRLEN + 8];
-  struct device dev;
+  int socket;
+  pthread_mutex_t socket_mtx;
+  struct device *dev;
   int cachedir_fd;
 };
 
@@ -69,7 +69,7 @@ struct io_thread_arg {
   int busy;
   int socket;
   pthread_mutex_t *socket_mtx;
-  char devicename[DEVNAME_SIZE];
+  char *devicename;
   int cachedir_fd;
   struct __attribute__((packed)) {
     uint32_t magic;
@@ -83,9 +83,7 @@ struct io_thread_arg {
 };
 
 int running = 1;
-int reload_config = 0;
 struct io_thread_arg io_threads[128];
-unsigned short num_io_threads;
 struct config cfg;
 
 static ssize_t read_all (int fd, void *buffer, size_t len)
@@ -528,23 +526,15 @@ ERROR:
   return NULL;
 }
 
-static int get_device_by_name (struct client_thread_arg *arg)
+static struct device *get_device_by_name (char *devicename)
 {
-  unsigned int i;
-  int result;
+  int i;
 
-/* TODO: mutex lock global cfg here */
   for (i = 0; i < cfg.num_devices; i++)
-    if (!strcmp(cfg.devs[i].name, arg->dev.name))
-      break;
+    if (!strcmp(cfg.devs[i].name, devicename))
+      return &cfg.devs[i];
 
-  if (i < cfg.num_devices) {
-    memcpy(&arg->dev, &cfg.devs[i], sizeof(arg->dev));
-    result = 0;
-  } else
-    result = -1;
-
-  return result;
+  return NULL;
 }
 
 static int nbd_send_reply (int socket, uint32_t opt_type, uint32_t reply_type,
@@ -590,7 +580,6 @@ static int nbd_send_devicelist (int socket, uint32_t opt_type)
 {
   unsigned int i;
 
-/* XXX: mutex lock global cfg here? */
   for (i = 0; i < cfg.num_devices; i++) {
     if (nbd_send_reply(socket, opt_type, NBD_REP_SERVER, cfg.devs[i].name))
       return -1;
@@ -605,7 +594,7 @@ static int nbd_send_device_info (struct client_thread_arg *arg, uint32_t flags)
   uint16_t devflags;
   char padding[124];
 
-  devsize = htonll(arg->dev.size);
+  devsize = htonll(arg->dev->size);
 
   if (write_all(arg->socket, &devsize, sizeof(devsize)) != 0)
     return -1;
@@ -628,7 +617,7 @@ static int nbd_send_device_info (struct client_thread_arg *arg, uint32_t flags)
 static int nbd_handshake (struct client_thread_arg *arg)
 {
   uint32_t flags, opt_type, opt_len;
-  char ihaveopt[8];
+  char ihaveopt[8], devicename[NBD_BUFSIZE];
   uint16_t srv_flags;
   int res;
 
@@ -678,17 +667,17 @@ static int nbd_handshake (struct client_thread_arg *arg)
     }
 
     if (opt_len > 0) {
-      if (read_all(arg->socket, arg->dev.name, opt_len) != 0)
+      if (read_all(arg->socket, devicename, opt_len) != 0)
         return -1;
 
-      arg->dev.name[opt_len] = '\0';
+      devicename[opt_len] = '\0';
     }
 
     switch (ntohl(opt_type)) {
       case NBD_OPT_EXPORT_NAME:
-        if (get_device_by_name(arg) != 0) {
+        if ((arg->dev = get_device_by_name(devicename)) == NULL) {
           logerr("client %s unknown device %s",
-                 arg->clientname, arg->dev.name);
+                 arg->clientname, devicename);
           return -1;
         }
         return nbd_send_device_info(arg, flags);
@@ -732,7 +721,7 @@ static struct io_thread_arg *find_free_io_worker ()
     if (round > 10000)
       nanosleep(&holdon, NULL);
 
-    i = round % num_io_threads;
+    i = round % cfg.num_io_threads;
 
     res = pthread_mutex_trylock(&io_threads[i].wakeup_mtx);
     if (res == EBUSY)
@@ -854,7 +843,7 @@ static int client_worker_loop (struct client_thread_arg *arg)
 
   slot->socket = arg->socket;
   slot->socket_mtx = &arg->socket_mtx;
-  strcpy(slot->devicename, arg->dev.name);
+  slot->devicename = arg->dev->name;
   slot->cachedir_fd = arg->cachedir_fd;
 
   if ((res = pthread_cond_signal(&slot->wakeup_cond)) != 0) {
@@ -898,19 +887,20 @@ static void *client_worker (void *arg0)
     goto ERROR;
   }
 
-  if ((arg->cachedir_fd = open(arg->dev.cachedir, O_RDONLY|O_DIRECTORY)) < 0) {
+  arg->cachedir_fd = open(arg->dev->cachedir, O_RDONLY|O_DIRECTORY);
+  if (arg->cachedir_fd < 0) {
     logerr("open(): %s", strerror(errno));
     goto ERROR1;
   }
 
   syslog(LOG_INFO, "client %s connecting to device %s\n", arg->clientname,
-         arg->dev.name);
+         arg->dev->name);
 
   while (client_worker_loop(arg) == 0)
     ;;
 
   syslog(LOG_INFO, "client %s disconnecting from device %s\n", arg->clientname,
-         arg->dev.name);
+         arg->dev->name);
 
   if (close(arg->cachedir_fd) != 0)
     logerr("close(): %s", strerror(errno));
@@ -933,12 +923,6 @@ static void sigterm_handler (int sig __attribute__((unused)))
   running = 0;
 }
 
-static void sighup_handler (int sig __attribute__((unused)))
-{
-  syslog(LOG_INFO, "SIGHUP received, reloading configuration...\n");
-  reload_config = 1;
-}
-
 static void setup_signal (int sig, void (*handler)(int))
 {
   struct sigaction sa;
@@ -956,14 +940,13 @@ static void setup_signals ()
   if (sigfillset(&sigset) != 0)
     err(1, "sigfillset()");
 
-  if ((sigdelset(&sigset, SIGTERM) != 0) || (sigdelset(&sigset, SIGHUP) != 0))
+  if (sigdelset(&sigset, SIGTERM) != 0)
     err(1, "sigdelset()");
 
   if (pthread_sigmask(SIG_SETMASK, &sigset, NULL) != 0)
     err(1, "pthread_sigmask()");
 
   setup_signal(SIGTERM, sigterm_handler);
-  setup_signal(SIGHUP, sighup_handler);
 }
 
 static int create_listen_socket_inet (char *ip, char *port)
@@ -1070,7 +1053,7 @@ static void launch_io_workers ()
   if (res != 0)
     errx(1, "pthread_attr_setstacksize(): %s", strerror(res));
 
-  for (i = 0; i < num_io_threads; i++) {
+  for (i = 0; i < cfg.num_io_threads; i++) {
     io_threads[i].busy = 1;
     io_threads[i].buflen = 1024 * 1024;
     io_threads[i].buffer = malloc(io_threads[i].buflen);
@@ -1095,7 +1078,7 @@ static void join_io_workers ()
 {
   int i, res;
 
-  for (i = 0; i < num_io_threads; i++) {
+  for (i = 0; i < cfg.num_io_threads; i++) {
     if ((res = pthread_mutex_lock(&io_threads[i].wakeup_mtx)) != 0)
       syslog(LOG_ERR, "pthread_mutex_lock(): %s", strerror(res));
     if ((res = pthread_cond_signal(&io_threads[i].wakeup_cond)) != 0)
@@ -1173,8 +1156,6 @@ int main (int argc, char **argv)
     errx(1, "Cannot load config file %s: %s (line %i)",
          configfile, errstr, errline);
 
-  num_io_threads = cfg.num_io_threads;
-
   if (!foreground)
     daemonize();
 
@@ -1202,11 +1183,6 @@ int main (int argc, char **argv)
   syslog(LOG_INFO, "starting...\n");
 
   while (running) {
-    if (reload_config &&
-        (load_config(configfile, &cfg, &errline, &errstr) != 0))
-      log_error("cannot reload config file %s: %s (line %i)",
-                configfile, errstr, errline);
-
     thread_arg = malloc(sizeof(*thread_arg));
     if (thread_arg == NULL) {
       log_error("%s", "malloc() failed");

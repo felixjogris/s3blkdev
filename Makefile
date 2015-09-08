@@ -6,10 +6,10 @@ TARGETS=s3nbd locktool syncer
 all:	$(TARGETS)
 
 s3nbd:	s3nbd.o config.o
-	$(CC) $(LDFLAGS) -o $@ $^ -lsnappy -lpthread
+	$(CC) $(LDFLAGS) -o $@ $^ -lsnappy -lgnutls -lpthread
 
 syncer:	syncer.o config.o
-	$(CC) $(LDFLAGS) -o $@ $^ -lsnappy
+	$(CC) $(LDFLAGS) -o $@ $^ -lsnappy -lgnutls -lpthread
 
 locktool:	locktool.o
 	$(CC) $(LDFLAGS) -o $@ $^
