@@ -189,7 +189,6 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
   size_t contentlen;
   static unsigned int conn_num = 0;
   const char *err_str;
-  int is_error = 1;
 
   dir_fd = open(dev->cachedir, O_RDONLY|O_DIRECTORY);
   if (dir_fd < 0) {
@@ -269,7 +268,7 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
   }
 
   if (!equal && (evict != 1)) {
-    s3_release_conn(s3conn, 0);
+    s3_release_conn(s3conn);
 
     s3conn = s3_get_conn(cfg, &conn_num, &err_str);
     if (s3conn == NULL) {
@@ -295,8 +294,6 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
     syslog(LOG_INFO, "synced %s/%s\n", dev->cachedir, name);
   }
 
-  is_error = 0;
-
   if ((equal && (evict == 1)) || (evict == 2)) {
     if (unlinkat(dir_fd, name, 0) != 0) {
       logwarn("unlinkat(): %s/%s", dev->cachedir, name);
@@ -308,7 +305,7 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
   }
 
 ERROR3:
-  s3_release_conn(s3conn, is_error);
+  s3_release_conn(s3conn);
 
 ERROR2:
   if (close(fd) < 0)

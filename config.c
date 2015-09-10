@@ -297,13 +297,15 @@ static int s3_tls_handshake (struct s3connection *conn, char const **errstr)
   for (;;) {
     res = gnutls_handshake(conn->tls_sess);
     if (res == GNUTLS_E_SUCCESS)
-      return 0;
+      break;
 
     if (gnutls_error_is_fatal(res) != 0) {
       *errstr = gnutls_strerror(res);
       return -1;
     }
   }
+
+  return 0;
 }
 
 static int s3_tls_setup (struct s3connection *conn, char const **errstr)
@@ -364,7 +366,7 @@ struct s3connection *s3_get_conn (struct config *cfg, unsigned int *num,
   int res;
 
   for (;;) {
-   *num %= cfg->num_s3fetchers * cfg->num_s3hosts * cfg->num_s3ports;
+    *num %= cfg->num_s3fetchers * cfg->num_s3hosts * cfg->num_s3ports;
 
     conn = *num % cfg->num_s3fetchers;
     host = *num % cfg->num_s3hosts;
@@ -404,9 +406,9 @@ struct s3connection *s3_get_conn (struct config *cfg, unsigned int *num,
   }
 }
 
-void s3_release_conn (struct s3connection *conn, int error)
+void s3_release_conn (struct s3connection *conn)
 {
-  if (error != 0) {
+  if (conn->is_error != 0) {
     if (conn->is_ssl != 0) {
       gnutls_certificate_free_credentials(conn->tls_cred);
       gnutls_deinit(conn->tls_sess);
@@ -566,6 +568,7 @@ static int s3_finish_req (struct s3connection *conn, unsigned short *code,
   unsigned int i;
 
   readbytes = 0;
+
   for (;;) {
     res = s3_read(conn, header + readbytes, sizeof(header) - readbytes - 1,
                   errstr);
@@ -655,6 +658,8 @@ int s3_request (struct config *cfg, struct s3connection *conn,
 {
   int res;
 
+  conn->is_error = 1;
+
   res = s3_start_req(cfg, conn, httpverb, folder, filename, data, data_len,
                      data_md5, errstr);
   if (res != 0)
@@ -663,6 +668,8 @@ int s3_request (struct config *cfg, struct s3connection *conn,
   res = s3_finish_req(conn, code, contentlen, md5, buffer, buflen, errstr);
   if (res != 0)
     return -1;
+
+  conn->is_error = 0;
 
   return 0;
 }
