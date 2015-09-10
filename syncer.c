@@ -14,6 +14,7 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <gnutls/gnutls.h>
+#include <gnutls/crypto.h>
 
 #include "s3nbd.h"
 #include "snappy-c.h"
@@ -47,7 +48,9 @@ int running = 1;
 
 char buf[COMPR_CHUNKSIZE], compbuf[COMPR_CHUNKSIZE];
 
-static void sync_chunk (struct device *dev, char *name, int evict)
+#if 0
+static void sync_chunk (struct config *cfg, struct device *dev, char *name,
+                        int evict)
 {
   int dir_fd, fd, storedir_fd, store_fd, equal, res;
   struct flock flk;
@@ -101,7 +104,6 @@ static void sync_chunk (struct device *dev, char *name, int evict)
     goto ERROR2;
   }
 
-/* TODO */
   snprintf(sdpath, sizeof(sdpath), "/var/tmp/%s.store", dev->name);
   if ((storedir_fd = open(sdpath, O_RDONLY|O_DIRECTORY)) < 0) {
     logwarn("open(): %s", sdpath);
@@ -160,6 +162,153 @@ ERROR4:
 ERROR3:
   if (close(storedir_fd) < 0)
     logwarn("close(): %s", sdpath);
+
+ERROR2:
+  if (close(fd) < 0)
+    logwarn("close(): %s/%s", dev->cachedir, name);
+
+ERROR1:
+  if (close(dir_fd) < 0)
+    logwarn("close(): %s", dev->cachedir);
+
+ERROR:
+  return;
+}
+#endif
+
+static void sync_chunk (struct config *cfg, struct device *dev, char *name,
+                        int evict)
+{
+  int dir_fd, fd, equal, res;
+  struct flock flk;
+  struct stat st;
+  size_t comprlen;
+  unsigned char local_md5[16], remote_md5[16];
+  struct s3connection *s3conn;
+  unsigned short code;
+  size_t contentlen;
+  static unsigned int conn_num = 0;
+  const char *err_str;
+  int is_error = 1;
+
+  dir_fd = open(dev->cachedir, O_RDONLY|O_DIRECTORY);
+  if (dir_fd < 0) {
+    logwarn("open(): %s", dev->cachedir);
+    goto ERROR;
+  }
+
+  fd = openat(dir_fd, name, (evict ? O_RDWR : O_RDONLY) | O_NOATIME);
+  if (fd < 0) {
+    logwarn("open(): %s/%s", dev->cachedir, name);
+    goto ERROR1;
+  }
+
+  flk.l_type = (evict ? F_WRLCK : F_RDLCK);
+  flk.l_whence = SEEK_SET;
+  flk.l_start = 0;
+  flk.l_len = CHUNKSIZE;
+  flk.l_pid = 0;
+
+  if (fcntl(fd, F_OFD_SETLK, &flk) != 0) {
+    logwarn("cannot lock %s/%s", dev->cachedir, name);
+    goto ERROR2;
+  }
+
+  if (fstat(fd, &st) != 0) {
+    logwarn("fstat(): %s/%s", dev->cachedir, name);
+    goto ERROR2;
+  }
+
+  if (st.st_size != CHUNKSIZE) {
+    logwarnx("%s/%s: filesize %lu != CHUNKSIZE",
+             dev->cachedir, name, st.st_size);
+    goto ERROR2;
+  }
+
+  if (read(fd, buf, CHUNKSIZE) != CHUNKSIZE) {
+    logwarn("read(): %s/%s", dev->cachedir, name);
+    goto ERROR2;
+  }
+
+  comprlen = sizeof(compbuf);
+  res = snappy_compress(buf, CHUNKSIZE, compbuf, &comprlen);
+  if (res != SNAPPY_OK) {
+    logwarnx("snappy_compress(): %s/%s: %i", dev->cachedir, name, res);
+    goto ERROR2;
+  }
+
+  res = gnutls_hash_fast(GNUTLS_DIG_MD5, compbuf, comprlen, local_md5);
+  if (res != GNUTLS_E_SUCCESS) {
+    logwarn("gnutls_hash_fast(): %s", gnutls_strerror(res));
+    goto ERROR2;
+  }
+
+  s3conn = s3_get_conn(cfg, &conn_num, &err_str);
+  if (s3conn == NULL) {
+    logwarn("s3_get_conn(): %s", err_str);
+    goto ERROR2;
+  }
+
+  res = s3_request(cfg, s3conn, &err_str, "HEAD", dev->name, name, NULL, 0,
+                   local_md5, &code, &contentlen, remote_md5, buf,
+                   sizeof(buf));
+  if (res != 0) {
+    logwarn("s3_request(): %s/%s/%s/%s: %s", s3conn->host, s3conn->bucket,
+            dev->name, name, err_str);
+    goto ERROR3;
+  }
+
+  if (code == 200) {
+    equal = !memcmp(local_md5, remote_md5, 16);
+  } else if (code == 404) {
+    equal = 0;
+  } else {
+    logwarn("s3_request(): %s/%s/%s/%s: HTTP status %hu", s3conn->host,
+            s3conn->bucket, dev->name, name, code);
+    goto ERROR3;
+  }
+
+  if (!equal && (evict != 1)) {
+    s3_release_conn(s3conn, 0);
+
+    s3conn = s3_get_conn(cfg, &conn_num, &err_str);
+    if (s3conn == NULL) {
+      logwarn("s3_get_conn(): %s", err_str);
+      goto ERROR2;
+    }
+
+    res = s3_request(cfg, s3conn, &err_str, "PUT", dev->name, name, compbuf,
+                     comprlen, local_md5, &code, &contentlen, remote_md5, buf,
+                     sizeof(buf));
+    if (res != 0) {
+      logwarn("s3_request(): %s/%s/%s/%s: %s", s3conn->host, s3conn->bucket,
+              dev->name, name, err_str);
+      goto ERROR3;
+    }
+
+    if (code != 200) {
+      logwarn("s3_request(): %s/%s/%s/%s: HTTP status %hu", s3conn->host,
+              s3conn->bucket, dev->name, name, code);
+      goto ERROR3;
+    }
+
+    syslog(LOG_INFO, "synced %s/%s\n", dev->cachedir, name);
+  }
+
+  is_error = 0;
+
+  if ((equal && (evict == 1)) || (evict == 2)) {
+    if (unlinkat(dir_fd, name, 0) != 0) {
+      logwarn("unlinkat(): %s/%s", dev->cachedir, name);
+      goto ERROR3;
+    }
+
+    syslog(LOG_INFO, "evicted %s/%s\n", dev->cachedir, name);
+    *name = '\0';
+  }
+
+ERROR3:
+  s3_release_conn(s3conn, is_error);
 
 ERROR2:
   if (close(fd) < 0)
@@ -362,11 +511,11 @@ int main (int argc, char **argv)
 
     if (mode == SYNCER) {
       for (l = num_chunks - 1; (l >= 0) && running; l--)
-        sync_chunk(dev, chunks[l].name, 0);
+        sync_chunk(&cfg, dev, chunks[l].name, 0);
     } else if (eviction_needed(dev->cachedir, max_used_pct)) {
       for (i = 0; (i < num_chunks) && running; i++) {
         if (eviction_needed(dev->cachedir, min_used_pct))
-          sync_chunk(dev, chunks[i].name, 1);
+          sync_chunk(&cfg, dev, chunks[i].name, 1);
         else
           break;
       }
@@ -376,7 +525,7 @@ int main (int argc, char **argv)
           continue;
 
         if (eviction_needed(dev->cachedir, min_used_pct))
-          sync_chunk(dev, chunks[i].name, 2);
+          sync_chunk(&cfg, dev, chunks[i].name, 2);
         else
           break;
       }

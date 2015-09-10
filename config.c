@@ -254,7 +254,7 @@ int save_pidfile (char *pidfile)
   return 0;
 }
 
-static int connect_s3 (struct s3connection *conn, char const **errstr)
+static int s3_connect (struct s3connection *conn, char const **errstr)
 {
   struct addrinfo hints, *result, *walk;
   int res, yes;
@@ -273,7 +273,8 @@ static int connect_s3 (struct s3connection *conn, char const **errstr)
     conn->sock = socket(walk->ai_family, walk->ai_socktype, 0);
     if (conn->sock >= 0) {
       yes = 1;
-      res = setsockopt(conn->sock, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
+      res = setsockopt(conn->sock, SOL_SOCKET, SO_KEEPALIVE, &yes,
+                       sizeof(yes));
 
       if ((res == 0) &&
           (connect(conn->sock, walk->ai_addr, walk->ai_addrlen) == 0))
@@ -289,7 +290,7 @@ static int connect_s3 (struct s3connection *conn, char const **errstr)
   return (walk == NULL ? -1 : 0);
 }
 
-static int tls_handshake (struct s3connection *conn, char const **errstr)
+static int s3_tls_handshake (struct s3connection *conn, char const **errstr)
 {
   int res;
 
@@ -305,7 +306,7 @@ static int tls_handshake (struct s3connection *conn, char const **errstr)
   }
 }
 
-static int setup_s3_ssl (struct s3connection *conn, char const **errstr)
+static int s3_tls_setup (struct s3connection *conn, char const **errstr)
 {
   int res;
 
@@ -335,7 +336,7 @@ static int setup_s3_ssl (struct s3connection *conn, char const **errstr)
   gnutls_handshake_set_timeout(conn->tls_sess, GNUTLS_DEFAULT_HANDSHAKE_TIMEOUT);
   gnutls_record_set_timeout(conn->tls_sess, 10000);
 
-  if (tls_handshake(conn, errstr) != 0)
+  if (s3_tls_handshake(conn, errstr) != 0)
     goto ERROR2;
 
   conn->is_ssl = 1;
@@ -355,7 +356,7 @@ ERROR:
   return -1;
 }
 
-struct s3connection *get_s3_conn (struct config *cfg, unsigned int *num,
+struct s3connection *s3_get_conn (struct config *cfg, unsigned int *num,
                                   char const **errstr)
 {
   struct s3connection *ret;
@@ -386,10 +387,10 @@ struct s3connection *get_s3_conn (struct config *cfg, unsigned int *num,
     ret->bucket = cfg->s3bucket;
 
     if (ret->sock < 0) {
-      if (connect_s3(ret, errstr) != 0)
+      if (s3_connect(ret, errstr) != 0)
         goto NEXT1;
 
-      if ((cfg->s3ssl != 0) && (setup_s3_ssl(ret, errstr) != 0))
+      if ((cfg->s3ssl != 0) && (s3_tls_setup(ret, errstr) != 0))
         goto NEXT2;
     }
 
@@ -403,7 +404,7 @@ struct s3connection *get_s3_conn (struct config *cfg, unsigned int *num,
   }
 }
 
-void release_s3_conn (struct s3connection *conn, int error)
+void s3_release_conn (struct s3connection *conn, int error)
 {
   if (error != 0) {
     if (conn->is_ssl != 0) {
@@ -435,8 +436,8 @@ static int sha1_b64 (char *key, char *msg, char *b64, char const **errstr)
   return 0;
 }
 
-static int send_all (struct s3connection *conn, void *buffer, size_t to_write,
-                     char const **errstr)
+static int s3_send_all (struct s3connection *conn, void *buffer,
+                        size_t to_write, char const **errstr)
 {
   size_t written;
   ssize_t res;
@@ -463,7 +464,7 @@ static int send_all (struct s3connection *conn, void *buffer, size_t to_write,
   return 0;
 }
 
-static ssize_t read_s3 (struct s3connection *conn, void *buffer, size_t buflen,
+static ssize_t s3_read (struct s3connection *conn, void *buffer, size_t buflen,
                         char const **errstr)
 {
   ssize_t ret;
@@ -479,7 +480,7 @@ static ssize_t read_s3 (struct s3connection *conn, void *buffer, size_t buflen,
     ret = gnutls_record_recv(conn->tls_sess, buffer, buflen);
     if (ret >= 0)
       break;
-    if ((ret == GNUTLS_E_REHANDSHAKE) && (tls_handshake(conn, errstr) != 0))
+    if ((ret == GNUTLS_E_REHANDSHAKE) && (s3_tls_handshake(conn, errstr) != 0))
       return -1;
     if ((ret != GNUTLS_E_INTERRUPTED) && (ret != GNUTLS_E_AGAIN)) {
       *errstr = gnutls_strerror(ret);
@@ -490,9 +491,10 @@ static ssize_t read_s3 (struct s3connection *conn, void *buffer, size_t buflen,
   return ret;
 }
 
-int send_s3_request (struct config *cfg, struct s3connection *conn,
-                     char *httpverb, char *folder, char *filename, void *data,
-                     void *data_md5, size_t data_len, char const **errstr)
+static int s3_start_req (struct config *cfg, struct s3connection *conn,
+                         char *httpverb, char *folder, char *filename,
+                         void *data, size_t data_len, void *data_md5,
+                         char const **errstr)
 {
   time_t now;
   struct tm tm;
@@ -543,20 +545,20 @@ int send_s3_request (struct config *cfg, struct s3connection *conn,
 
   strcat(header, "\r\n\r\n");
 
-  if (send_all(conn, header, strlen(header), errstr) != 0)
+  if (s3_send_all(conn, header, strlen(header), errstr) != 0)
     return -1;
 
-  if (is_put && (send_all(conn, data, data_len, errstr) != 0))
+  if (is_put && (s3_send_all(conn, data, data_len, errstr) != 0))
     return -1;
 
   return 0;
 }
 
-int read_s3_request (struct s3connection *conn, int is_head,
-                     unsigned short *code, size_t *contentlen,
-                     unsigned char *md5, char *buffer, size_t buflen,
-                     char const **errstr)
+static int s3_finish_req (struct s3connection *conn, unsigned short *code,
+                          size_t *contentlen, unsigned char *md5, char *buffer,
+                          size_t buflen, char const **errstr)
 {
+  char header[1024];
   ssize_t res;
   size_t readbytes;
   char *option, *body;
@@ -565,29 +567,30 @@ int read_s3_request (struct s3connection *conn, int is_head,
 
   readbytes = 0;
   for (;;) {
-    res = read_s3(conn, buffer + readbytes, buflen - readbytes - 1, errstr);
+    res = s3_read(conn, header + readbytes, sizeof(header) - readbytes - 1,
+                  errstr);
     if (res < 0)
       return -1;
 
     readbytes += res;
-    if (readbytes >= buflen - 1) {
+    if (readbytes >= sizeof(header) - 1) {
       *errstr = "HTTP header too large";
       return -1;
     }
 
-    buffer[readbytes] = '\0';
-    if ((body = strstr(buffer, "\r\n\r\n")) != NULL)
+    header[readbytes] = '\0';
+    if ((body = strstr(header, "\r\n\r\n")) != NULL)
       break;
   }
 
   body += 4;
 
-  if (sscanf(buffer, "HTTP/1.1 %hu", code) != 1) {
+  if (sscanf(header, "HTTP/1.1 %hu", code) != 1) {
     *errstr = "no HTTP/1.1 response code";
     return -1;
   }
 
-  if ((option = strstr(buffer, "Content-Length")) == NULL) {
+  if ((option = strstr(header, "Content-Length")) == NULL) {
     *errstr = "no Content-Length";
     return -1;
   }
@@ -600,7 +603,7 @@ int read_s3_request (struct s3connection *conn, int is_head,
     return -1;
   }
 
-  if ((option = strstr(buffer, "ETag")) == NULL) {
+  if ((option = strstr(header, "ETag")) == NULL) {
     *errstr = "no ETag";
     return -1;
   }
@@ -627,20 +630,39 @@ int read_s3_request (struct s3connection *conn, int is_head,
       md5[i / 2] <<= 4;
   }
 
-  if (!is_head) {
-    /* get rid of header */
-    readbytes -= body - buffer;
-    memmove(buffer, body, readbytes);
+  /* get rid of header */
+  readbytes -= body - header;
+  memmove(buffer, body, readbytes);
 
-    /* receive payload */
-    while (readbytes < *contentlen) {
-      res = read_s3(conn, buffer + readbytes, *contentlen - readbytes, errstr);
-      if (res <= 0)
-        return -1;
+  /* receive payload */
+  while (readbytes < *contentlen) {
+    res = s3_read(conn, buffer + readbytes, *contentlen - readbytes, errstr);
+    if (res <= 0)
+      return -1;
 
-      readbytes += res;
-    }
+    readbytes += res;
   }
+
+  return 0;
+}
+
+int s3_request (struct config *cfg, struct s3connection *conn,
+                char const **errstr,
+                char *httpverb, char *folder, char *filename, void *data,
+                size_t data_len, void *data_md5,
+                unsigned short *code, size_t *contentlen, unsigned char *md5,
+                char *buffer, size_t buflen)
+{
+  int res;
+
+  res = s3_start_req(cfg, conn, httpverb, folder, filename, data, data_len,
+                     data_md5, errstr);
+  if (res != 0)
+    return -1;
+
+  res = s3_finish_req(conn, code, contentlen, md5, buffer, buflen, errstr);
+  if (res != 0)
+    return -1;
 
   return 0;
 }

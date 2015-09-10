@@ -67,15 +67,14 @@ struct config {
 int load_config (char *configfile, struct config *cfg,
                  unsigned int *err_line, char const **errstr);
 int save_pidfile (char *pidfile);
-struct s3connection *get_s3_conn (struct config *cfg, unsigned int *num,
+struct s3connection *s3_get_conn (struct config *cfg, unsigned int *num,
                                   char const **errstr);
-void release_s3_conn (struct s3connection *conn, int error);
-int send_s3_request (struct config *cfg, struct s3connection *conn,
-                     char *httpverb, char *folder, char *filename, void *data,
-                     void *data_md5, size_t data_len, char const **errstr);
-int read_s3_request (struct s3connection *conn, int is_head,
-                     unsigned short *code, size_t *contentlen,
-                     unsigned char *etag, char *buffer, size_t buflen,
-                     char const **errstr);
+void s3_release_conn (struct s3connection *conn, int error);
+int s3_request (struct config *cfg, struct s3connection *conn,
+                char const **errstr,
+                char *httpverb, char *folder, char *filename, void *data,
+                size_t data_len, void *data_md5,
+                unsigned short *code, size_t *contentlen, unsigned char *md5,
+                char *buffer, size_t buflen);
 
 #endif

@@ -20,7 +20,7 @@ int main ()
   unsigned short code;
   size_t contentlen;
   unsigned char md5[16];
-  char *content = "hello, world";
+  char *content = "hello, world!";
 
   if (load_config(configfile, &cfg, &err_line, &err_str) != 0)
     errx(1, "%s: %s (line %u)", configfile, err_str, err_line);
@@ -29,7 +29,7 @@ int main ()
     errx(1, "gnutls_global_init()");
 
   conn_num = 5001;
-  s3conn = get_s3_conn(&cfg, &conn_num, &err_str);
+  s3conn = s3_get_conn(&cfg, &conn_num, &err_str);
   if (s3conn == NULL)
     errx(1, "get_s3conn(): %s", err_str);
 
@@ -37,19 +37,17 @@ int main ()
   if (res != GNUTLS_E_SUCCESS)
     errx(1, "gnutls_hash_fast(): %s", gnutls_strerror(res));
 
-  res = send_s3_request(&cfg, s3conn, "PUT", "folder1", "test.txt", content, md5,
-                        strlen(content), &err_str);
-  fprintf(stderr, "res=%i err_str=%s\n", res, err_str);
-
-  res = read_s3_request(s3conn, 0, &code, &contentlen, md5, buffer,
-                        sizeof(buffer), &err_str);
+  res = s3_request(&cfg, s3conn, &err_str, "PUT", "folder1", "test.txt",
+                   content, strlen(content), md5, &code, &contentlen, md5,
+                   buffer, sizeof(buffer));
   fprintf(stderr, "res=%i code=%hu contentlen=%lu err_str=%s md5=0x",
           res, code, contentlen, err_str);
+
   for (res = 0; res < 16; res++)
     fprintf(stderr, "%hhx", md5[res]);
   fputs("\n", stderr);
 
-  release_s3_conn(s3conn, 0);
+  s3_release_conn(s3conn, 0);
   gnutls_global_deinit();
 
   write(1, buffer, contentlen);
