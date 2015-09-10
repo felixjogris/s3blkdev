@@ -43,7 +43,7 @@ static int is_incomplete (char *line)
 }
 
 int load_config (char *configfile, struct config *cfg,
-                 unsigned int *err_line, char **errstr)
+                 unsigned int *err_line, char const **errstr)
 {
   FILE *fh;
   int result = -1, in_device = 0;
@@ -254,7 +254,7 @@ int save_pidfile (char *pidfile)
   return 0;
 }
 
-static int connect_s3 (struct s3connection *conn)
+static int connect_s3 (struct s3connection *conn, char const **errstr)
 {
   struct addrinfo hints, *result, *walk;
   int res, yes;
@@ -264,21 +264,23 @@ static int connect_s3 (struct s3connection *conn)
   hints.ai_socktype = SOCK_STREAM;
 
   res = getaddrinfo(conn->host, conn->port, &hints, &result);
-  if (res != 0)
+  if (res != 0) {
+    *errstr = gai_strerror(res);
     return -1;
+  }
 
   for (walk = result; walk != NULL; walk = walk->ai_next) {
     conn->sock = socket(walk->ai_family, walk->ai_socktype, 0);
-    if (conn->sock < 0)
-      continue;
+    if (conn->sock >= 0) {
+      yes = 1;
+      res = setsockopt(conn->sock, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
 
-    yes = 1;
-    res = setsockopt(conn->sock, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
+      if ((res == 0) &&
+          (connect(conn->sock, walk->ai_addr, walk->ai_addrlen) == 0))
+        break;
+    }
 
-    if ((res == 0) &&
-        (connect(conn->sock, walk->ai_addr, walk->ai_addrlen) == 0))
-      break;
-
+    *errstr = strerror(errno);
     close(conn->sock);
   }
 
@@ -287,12 +289,30 @@ static int connect_s3 (struct s3connection *conn)
   return (walk == NULL ? -1 : 0);
 }
 
-static int setup_s3_ssl (struct s3connection *conn)
+static int tls_handshake (struct s3connection *conn, char const **errstr)
 {
   int res;
 
-  if (gnutls_init(&conn->tls_sess, GNUTLS_CLIENT) != GNUTLS_E_SUCCESS)
-    return -1;
+  for (;;) {
+    res = gnutls_handshake(conn->tls_sess);
+    if (res == GNUTLS_E_SUCCESS)
+      return 0;
+
+    if (gnutls_error_is_fatal(res) != 0) {
+      *errstr = gnutls_strerror(res);
+      return -1;
+    }
+  }
+}
+
+static int setup_s3_ssl (struct s3connection *conn, char const **errstr)
+{
+  int res;
+
+  *errstr = NULL;
+
+  if ((res = gnutls_init(&conn->tls_sess, GNUTLS_CLIENT)) != GNUTLS_E_SUCCESS)
+    goto ERROR;
 
   res = gnutls_set_default_priority(conn->tls_sess);
   if (res != GNUTLS_E_SUCCESS)
@@ -315,14 +335,8 @@ static int setup_s3_ssl (struct s3connection *conn)
   gnutls_handshake_set_timeout(conn->tls_sess, GNUTLS_DEFAULT_HANDSHAKE_TIMEOUT);
   gnutls_record_set_timeout(conn->tls_sess, 10000);
 
-  for (;;) {
-    res = gnutls_handshake(conn->tls_sess);
-    if (res == GNUTLS_E_SUCCESS)
-      break;
-
-    if (gnutls_error_is_fatal(res) != 0)
-      goto ERROR2;
-  }
+  if (tls_handshake(conn, errstr) != 0)
+    goto ERROR2;
 
   conn->is_ssl = 1;
 
@@ -334,10 +348,15 @@ ERROR2:
 ERROR1:
   gnutls_deinit(conn->tls_sess);
 
-  return 0;
+ERROR:
+  if (*errstr == NULL)
+    *errstr = gnutls_strerror(res);
+
+  return -1;
 }
 
-struct s3connection *get_s3_conn (struct config *cfg, unsigned int *num)
+struct s3connection *get_s3_conn (struct config *cfg, unsigned int *num,
+                                  char const **errstr)
 {
   struct s3connection *ret;
   unsigned int conn, host, port;
@@ -357,17 +376,20 @@ struct s3connection *get_s3_conn (struct config *cfg, unsigned int *num)
 
     if (res == 0) { /* no-op */ }
     else if (res == EBUSY) continue;
-    else return NULL;
+    else {
+      *errstr = strerror(res);
+      return NULL;
+    }
 
     ret->host = cfg->s3hosts[host];
     ret->port = cfg->s3ports[port];
     ret->bucket = cfg->s3bucket;
 
     if (ret->sock < 0) {
-      if (connect_s3(ret) != 0)
+      if (connect_s3(ret, errstr) != 0)
         goto NEXT1;
 
-      if ((cfg->s3ssl != 0) && (setup_s3_ssl(ret) != 0))
+      if ((cfg->s3ssl != 0) && (setup_s3_ssl(ret, errstr) != 0))
         goto NEXT2;
     }
 
@@ -400,14 +422,16 @@ void release_s3_conn (struct s3connection *conn, int error)
   if (gnutls_hash_fast(GNUTLS_DIG_MD5, data, data_len, b64) != GNUTLS_E_SUCCESS)
 #endif
 
-static int sha1_b64 (char *key, char *msg, char *b64)
+static int sha1_b64 (char *key, char *msg, char *b64, char const **errstr)
 {
   int res;
 
   res = gnutls_hmac_fast(GNUTLS_MAC_SHA1, key, strlen(key), msg, strlen(msg),
                          b64);
-  if (res != GNUTLS_E_SUCCESS)
+  if (res != GNUTLS_E_SUCCESS) {
+    *errstr = gnutls_strerror(res);
     return -1;
+  }
 
   base64_encode_raw((uint8_t *) b64, 20, (uint8_t *) b64);
   b64[BASE64_ENCODE_RAW_LENGTH(20)] = '\0';
@@ -415,48 +439,68 @@ static int sha1_b64 (char *key, char *msg, char *b64)
   return 0;
 }
 
-static int send_all (struct s3connection *conn, void *buffer, size_t to_write)
+static int send_all (struct s3connection *conn, void *buffer, size_t to_write,
+                     char const **errstr)
 {
   size_t written;
   ssize_t res;
 
   for (written = 0; to_write > 0; written += res, to_write -= res) {
-    if (conn->is_ssl)
-      res = gnutls_record_send(conn->tls_sess, buffer + written, to_write);
-    else
+    if (!conn->is_ssl) {
       res = write(conn->sock, buffer + written, to_write);
-
-    if ((res < 0) && (errno != EAGAIN) && (errno != EWOULDBLOCK) &&
-        (errno != EINTR))
-      return -1;
+      if ((res < 0) && (errno != EAGAIN) && (errno != EWOULDBLOCK) &&
+          (errno != EINTR)) {
+        *errstr = strerror(errno);
+        return -1;
+      }
+    } else for (;;) {
+      res = gnutls_record_send(conn->tls_sess, buffer + written, to_write);
+      if (res >= 0)
+        break;
+      if ((res != GNUTLS_E_INTERRUPTED) && (res != GNUTLS_E_AGAIN)) {
+        *errstr = gnutls_strerror(res);
+        return -1;
+      }
+    }
   }
 
   return 0;
 }
 
-static ssize_t read_s3 (struct s3connection *conn, void *buffer, size_t buflen)
+static ssize_t read_s3 (struct s3connection *conn, void *buffer, size_t buflen,
+                        char const **errstr)
 {
   ssize_t ret;
 
-  if (conn->is_ssl)
-    ret = gnutls_record_send(conn->tls_sess, buffer, buflen);
-  else
-    ret = write(conn->sock, buffer, buflen);
-
-  if ((ret < 0) && (errno != EAGAIN) && (errno != EWOULDBLOCK) &&
-      (errno != EINTR))
-    return -1;
+  if (!conn->is_ssl) {
+    ret = read(conn->sock, buffer, buflen);
+    if ((ret < 0) && (errno != EAGAIN) && (errno != EWOULDBLOCK) &&
+        (errno != EINTR)) {
+      *errstr = gnutls_strerror(ret);
+      return -1;
+    }
+  } else for (;;) {
+    ret = gnutls_record_recv(conn->tls_sess, buffer, buflen);
+    if (ret >= 0)
+      break;
+    if ((ret == GNUTLS_E_REHANDSHAKE) && (tls_handshake(conn, errstr) != 0))
+      return -1;
+    if ((ret != GNUTLS_E_INTERRUPTED) && (ret != GNUTLS_E_AGAIN)) {
+      *errstr = gnutls_strerror(ret);
+      return -1;
+    }
+  }
 
   return ret;
 }
 
 int send_s3_request (struct config *cfg, struct s3connection *conn,
                      char *httpverb, char *folder, char *filename, void *data,
-                     void *data_md5, size_t data_len)
+                     void *data_md5, size_t data_len, char const **errstr)
 {
   time_t now;
   struct tm tm;
-  int url_start, is_put;
+  int url_start, is_put, res;
   char date[32], string_to_sign[512], header[1024];
   unsigned char md5b64[BASE64_ENCODE_RAW_LENGTH(16) + 1];
 
@@ -469,7 +513,8 @@ int send_s3_request (struct config *cfg, struct s3connection *conn,
   if (is_put) {
     base64_encode_raw(data_md5, 16, md5b64);
     md5b64[BASE64_ENCODE_RAW_LENGTH(16)] = '\0';
-  }
+  } else
+    md5b64[0] = '\0';
 
   snprintf(string_to_sign, sizeof(string_to_sign) - 1,
            "%s\n" // http verb
@@ -489,7 +534,9 @@ int send_s3_request (struct config *cfg, struct s3connection *conn,
            httpverb, string_to_sign + url_start, conn->host, date,
            cfg->s3accesskey);
 
-  if (sha1_b64(cfg->s3secretkey, string_to_sign, header + strlen(header)) != 0)
+  res = sha1_b64(cfg->s3secretkey, string_to_sign, header + strlen(header),
+                 errstr);
+  if (res != 0)
     return -1;
 
   if (is_put)
@@ -498,58 +545,104 @@ int send_s3_request (struct config *cfg, struct s3connection *conn,
 
   strcat(header, "\r\n\r\n");
 
-  if (send_all(conn, header, strlen(header)) != 0)
+  if (send_all(conn, header, strlen(header), errstr) != 0)
     return -1;
 
-  if (is_put && (send_all(conn, data, data_len) != 0))
+  if (is_put && (send_all(conn, data, data_len, errstr) != 0))
     return -1;
 
   return 0;
 }
 
-int read_s3_request (struct s3connection *conn, unsigned short *code,
-                     size_t *contentlen, unsigned char *md5, char *buffer,
-                     size_t buflen)
+int read_s3_request (struct s3connection *conn, int is_head,
+                     unsigned short *code, size_t *contentlen,
+                     unsigned char *md5, char *buffer, size_t buflen,
+                     char const **errstr)
 {
-  ssize_t len;
-  char *p;
+  ssize_t res;
+  size_t readbytes;
+  char *option, *body;
   unsigned char etag[32];
   unsigned int i;
 
-  len = read_s3(conn, buffer, buflen - 1);
-  if (len < 0)
+  readbytes = 0;
+  for (;;) {
+    res = read_s3(conn, buffer + readbytes, buflen - readbytes - 1, errstr);
+    if (res < 0)
+      return -1;
+
+    readbytes += res;
+    if (readbytes >= buflen - 1) {
+      *errstr = "HTTP header too large";
+      return -1;
+    }
+
+    buffer[readbytes] = '\0';
+    if ((body = strstr(buffer, "\r\n\r\n")) != NULL)
+      break;
+  }
+
+  body += 4;
+
+  if (sscanf(buffer, "HTTP/1.1 %hu", code) != 1) {
+    *errstr = "no HTTP/1.1 response code";
     return -1;
+  }
 
-  buffer[len] = '\0';
+  if ((option = strstr(buffer, "Content-Length")) == NULL) {
+    *errstr = "no Content-Length";
+    return -1;
+  }
+  if (sscanf(option, "Content-Length: %lu", contentlen) != 1) {
+    *errstr = "invalid Content-Length";
+    return -1;
+  }
+  if (*contentlen > buflen) {
+    *errstr = "Content-Length too large";
+    return -1;
+  }
 
-  if (strstr(buffer, "\r\n\r\n") == NULL)
-    goto ERROR;
+  if ((option = strstr(buffer, "ETag")) == NULL) {
+    *errstr = "no ETag";
+    return -1;
+  }
+  if (sscanf(option, "ETag: \"%32s", etag) != 1) {
+    *errstr = "invalid ETag";
+    return -1;
+  }
 
-  if (sscanf(buffer, "HTTP/1.1 %hu", code) != 1)
-    goto ERROR;
-
-  if ((p = strstr(buffer, "Content-Length")) == NULL)
-    goto ERROR;
-  if (sscanf(p, "Content-Length: %lu", contentlen) != 1)
-    goto ERROR;
-
-  if ((p = strstr(buffer, "ETag")) == NULL)
-    goto ERROR;
-  if (sscanf(p, "ETag: \"%32s", etag) != 1)
-    goto ERROR;
-
+  /* etag is lowercase hex */
   for (i = 0; i < sizeof(etag); i++) {
+    if (i % 2 == 0)
+      md5[i / 2] = 0;
+
     if ((etag[i] >= '0') && (etag[i] <= '9'))
-      md5[i / 2] += etag[i] - '0';
+      md5[i / 2] |= etag[i] - '0';
     else if ((etag[i] >= 'a') && (etag[i] <= 'f'))
-      md5[i / 2] += etag[i] - 'a' + 10;
-    else
-      goto ERROR;
+      md5[i / 2] |= etag[i] - 'a' + 10;
+    else {
+      *errstr = "ETag contains invalid character";
+      return -1;
+    }
 
     if (i % 2 == 0)
       md5[i / 2] <<= 4;
   }
 
-ERROR:
-  return -1;
+  if (!is_head) {
+    /* get rid of header */
+    readbytes -= body - buffer;
+    memmove(buffer, body, readbytes);
+
+    /* receive payload */
+    while (readbytes < *contentlen) {
+      res = read_s3(conn, buffer + readbytes, *contentlen - readbytes, errstr);
+      if (res <= 0)
+        return -1;
+
+      readbytes += res;
+    }
+  }
+
+  return 0;
 }

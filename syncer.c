@@ -304,7 +304,8 @@ int main (int argc, char **argv)
   struct chunk_entry *chunks = NULL;
   enum { SYNCER, EVICTOR } mode;
   unsigned int min_used_pct = 100, max_used_pct = 100, errline, devnum;
-  char *configfile = DEFAULT_CONFIGFILE, *pidfile = NULL, *errstr;
+  char *configfile = DEFAULT_CONFIGFILE, *pidfile = NULL;
+  const char *errstr;
   struct config cfg;
   struct device *dev;
 

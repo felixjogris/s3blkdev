@@ -1136,7 +1136,8 @@ int main (int argc, char **argv)
   else syslog(LOG_WARNING, fmt "\n", ## params); \
 } while (0)
 
-  char *configfile = DEFAULT_CONFIGFILE, *pidfile = NULL, *errstr;
+  char *configfile = DEFAULT_CONFIGFILE, *pidfile = NULL;
+  const char *errstr;
   int foreground = 0, listen_socket, res;
   unsigned int errline;
   pthread_attr_t thread_attr;

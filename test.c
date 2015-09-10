@@ -1,19 +1,22 @@
+#include <stdio.h>
 #include <err.h>
 #include <gnutls/gnutls.h>
 #include <nettle/base64.h>
 
 #include "s3nbd.h"
 
+  char buffer[4096*2048];
 int main ()
 {
   char *configfile = "s3nbd.conf";
   struct config cfg;
-  char *err_str;
+  const char *err_str;
   unsigned int err_line, conn_num;
   struct s3connection *s3conn;
-  char buffer[4096];
   int res;
-  unsigned char etag[16];
+  unsigned short code;
+  size_t contentlen;
+  unsigned char md5[16];
 
   if (load_config(configfile, &cfg, &err_line, &err_str) != 0)
     errx(1, "%s: %s (line %u)", configfile, err_str, err_line);
@@ -22,21 +25,25 @@ int main ()
     errx(1, "gnutls_global_init()");
 
   conn_num = 5001;
-  s3conn = get_s3_conn(&cfg, &conn_num);
+  s3conn = get_s3_conn(&cfg, &conn_num, &err_str);
   if (s3conn == NULL)
-    errx(1, "no s3conn");
+    errx(1, "get_s3conn(): %s", err_str);
 
-  res = send_s3_request(&cfg, s3conn, "HEAD", "", "42.gif", "", "", 0);
-  printf("res=%i\n", res);
+  res = send_s3_request(&cfg, s3conn, "GET", "", "42.gif", "", "", 0, &err_str);
+  fprintf(stderr, "res=%i err_str=%s\n", res, err_str);
 
-  res = gnutls_record_recv(s3conn->tls_sess, buffer, sizeof(buffer) - 1);
-  printf("res=%i\n", res);
+  res = read_s3_request (s3conn, 0, &code, &contentlen, md5, buffer,
+                         sizeof(buffer), &err_str);
+  fprintf(stderr, "res=%i code=%hu contentlen=%lu err_str=%s md5=0x",
+          res, code, contentlen, err_str);
+  for (res = 0; res < 16; res++)
+    fprintf(stderr, "%hhx", md5[res]);
+  fputs("\n", stderr);
 
   release_s3_conn(s3conn, 0);
   gnutls_global_deinit();
 
-  buffer[res] = 0;
-  puts(buffer);
+  write(1, buffer, contentlen);
 
   return 0;
 }
