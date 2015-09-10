@@ -19,6 +19,7 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+#include <gnutls/gnutls.h>
 #include <pthread.h>
 
 #include "s3nbd.h"
@@ -1164,6 +1165,9 @@ int main (int argc, char **argv)
   if (!foreground)
     daemonize();
 
+  if ((res = gnutls_global_init()) != GNUTLS_E_SUCCESS)
+    errx(1, "gnutls_global_init(): %s", gnutls_strerror(res));
+
   if (save_pidfile(pidfile) != 0)
     err(1, "Cannot save pidfile %s", pidfile);
 
@@ -1228,6 +1232,8 @@ int main (int argc, char **argv)
 
   if (unlink(pidfile) != 0)
     log_error("unlink(): %s: %s", pidfile, strerror(errno));
+
+  gnutls_global_deinit();
 
   syslog(LOG_INFO, "exiting...\n");
   closelog();

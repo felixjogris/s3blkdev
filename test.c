@@ -1,14 +1,17 @@
 #include <stdio.h>
+#include <string.h>
 #include <err.h>
 #include <gnutls/gnutls.h>
+#include <gnutls/crypto.h>
 #include <nettle/base64.h>
 
 #include "s3nbd.h"
 
-  char buffer[4096*2048];
+char buffer[4096*2048];
+
 int main ()
 {
-  char *configfile = "s3nbd.conf";
+  char *configfile = "s3nbd.conf.nogit";
   struct config cfg;
   const char *err_str;
   unsigned int err_line, conn_num;
@@ -17,6 +20,7 @@ int main ()
   unsigned short code;
   size_t contentlen;
   unsigned char md5[16];
+  char *content = "hello, world";
 
   if (load_config(configfile, &cfg, &err_line, &err_str) != 0)
     errx(1, "%s: %s (line %u)", configfile, err_str, err_line);
@@ -29,11 +33,16 @@ int main ()
   if (s3conn == NULL)
     errx(1, "get_s3conn(): %s", err_str);
 
-  res = send_s3_request(&cfg, s3conn, "GET", "", "42.gif", "", "", 0, &err_str);
+  res = gnutls_hash_fast(GNUTLS_DIG_MD5, content, strlen(content), md5);
+  if (res != GNUTLS_E_SUCCESS)
+    errx(1, "gnutls_hash_fast(): %s", gnutls_strerror(res));
+
+  res = send_s3_request(&cfg, s3conn, "PUT", "folder1", "test.txt", content, md5,
+                        strlen(content), &err_str);
   fprintf(stderr, "res=%i err_str=%s\n", res, err_str);
 
-  res = read_s3_request (s3conn, 0, &code, &contentlen, md5, buffer,
-                         sizeof(buffer), &err_str);
+  res = read_s3_request(s3conn, 0, &code, &contentlen, md5, buffer,
+                        sizeof(buffer), &err_str);
   fprintf(stderr, "res=%i code=%hu contentlen=%lu err_str=%s md5=0x",
           res, code, contentlen, err_str);
   for (res = 0; res < 16; res++)
@@ -44,6 +53,7 @@ int main ()
   gnutls_global_deinit();
 
   write(1, buffer, contentlen);
+  write(1, "\n", 1);
 
   return 0;
 }

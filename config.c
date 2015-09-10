@@ -418,10 +418,6 @@ void release_s3_conn (struct s3connection *conn, int error)
   pthread_mutex_unlock(&conn->mtx);
 }
 
-#if 0
-  if (gnutls_hash_fast(GNUTLS_DIG_MD5, data, data_len, b64) != GNUTLS_E_SUCCESS)
-#endif
-
 static int sha1_b64 (char *key, char *msg, char *b64, char const **errstr)
 {
   int res;
@@ -511,7 +507,7 @@ int send_s3_request (struct config *cfg, struct s3connection *conn,
   strftime(date, sizeof(date) - 1, "%a, %d %b %Y %T GMT", &tm);
 
   if (is_put) {
-    base64_encode_raw(data_md5, 16, md5b64);
+    base64_encode_raw(md5b64, 16, data_md5);
     md5b64[BASE64_ENCODE_RAW_LENGTH(16)] = '\0';
   } else
     md5b64[0] = '\0';
@@ -521,9 +517,8 @@ int send_s3_request (struct config *cfg, struct s3connection *conn,
            "%s\n" // content md5
            "\n"   // content type
            "%s\n" // date
-           "%n/%s/%s",//%s",
-           httpverb, md5b64, date, &url_start, conn->bucket, //folder,
-           filename);
+           "%n/%s/%s/%s",
+           httpverb, md5b64, date, &url_start, conn->bucket, folder, filename);
 
   snprintf(header, sizeof(header) - 1,
            "%s %s HTTP/1.1\r\n"
@@ -541,7 +536,10 @@ int send_s3_request (struct config *cfg, struct s3connection *conn,
 
   if (is_put)
     snprintf(header + strlen(header), sizeof(header) - strlen(header) - 1,
-             "\r\nContent-Length: %lu", data_len);
+             "\r\n"
+             "Content-Length: %lu\r\n"
+             "Content-MD5: %s",
+             data_len, md5b64);
 
   strcat(header, "\r\n\r\n");
 

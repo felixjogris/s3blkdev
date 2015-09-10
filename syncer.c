@@ -13,6 +13,7 @@
 #include <syslog.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <gnutls/gnutls.h>
 
 #include "s3nbd.h"
 #include "snappy-c.h"
@@ -343,6 +344,9 @@ int main (int argc, char **argv)
     errdiex("Cannot load config file %s: %s (line %i)",
             configfile, errstr, errline);
 
+  if ((res = gnutls_global_init()) != GNUTLS_E_SUCCESS)
+    errdiex("gnutls_global_init(): %s", gnutls_strerror(res));
+
   if (save_pidfile(pidfile) != 0)
     errdie("Cannot save pidfile %s", pidfile);
 
@@ -381,6 +385,8 @@ int main (int argc, char **argv)
     free(chunks);
     chunks = NULL;
   }
+
+  gnutls_global_deinit();
 
   if (unlink(pidfile) != 0)
     errdie("unlink(): %s", pidfile);
