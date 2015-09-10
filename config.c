@@ -663,7 +663,8 @@ static int s3_finish_req (struct s3connection *conn, enum httpverb verb,
   if ((verb != HEAD) || (*code != 200)) {
     /* receive payload */
     while (readbytes < *contentlen) {
-      res = s3_read(conn, buffer + readbytes, *contentlen - readbytes, errstr);
+      res = s3_read(conn, buffer + readbytes,
+                    MIN(*contentlen - readbytes, 131072), errstr);
       if (res <= 0)
         return -1;
 
