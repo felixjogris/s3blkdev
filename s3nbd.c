@@ -91,7 +91,9 @@ static ssize_t read_all (int fd, void *buffer, size_t len)
   ssize_t res;
 
   for (; len > 0; buffer += res, len -= res) {
-    if ((res = read(fd, buffer, len)) <= 0) {
+    res = read(fd, buffer, len);
+    if ((res <= 0) && (errno != EAGAIN) && (errno != EWOULDBLOCK) &&
+        (errno != EINTR)) {
       if (res < 0)
         logerr("read(): %s", strerror(errno));
       return -1;
@@ -106,7 +108,9 @@ static ssize_t write_all (int fd, const void *buffer, size_t len)
   ssize_t res;
 
   for (; len > 0; buffer += res, len -= res) {
-    if ((res = write(fd, buffer, len)) < 0) {
+    res = write(fd, buffer, len);
+    if ((res < 0) && (errno != EAGAIN) && (errno != EWOULDBLOCK) &&
+        (errno != EINTR)) {
       logerr("write(): %s", strerror(errno));
       return -1;
     }

@@ -9,9 +9,12 @@
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <time.h>
 #include <netdb.h>
 #include <pthread.h>
 #include <gnutls/gnutls.h>
+#include <gnutls/crypto.h>
+#include <nettle/base64.h>
 
 #include "s3nbd.h"
 
@@ -96,6 +99,7 @@ int load_config (char *configfile, struct config *cfg,
         sscanf(line, " workers %hu", &cfg->num_io_threads) ||
         sscanf(line, " fetchers %hu", &cfg->num_s3fetchers) ||
         sscanf(line, " s3ssl %hhu", &cfg->s3ssl) ||
+        sscanf(line, " s3bucket %127s", cfg->s3bucket) ||
         sscanf(line, " s3accesskey %127s", cfg->s3accesskey) ||
         sscanf(line, " s3secretkey %127s", cfg->s3secretkey))
       continue;
@@ -189,6 +193,11 @@ int load_config (char *configfile, struct config *cfg,
     }
     cfg->num_s3ports = 1;
     strcpy(cfg->s3ports[0], "443");
+  }
+
+  if (cfg->s3bucket[0] == '\0') {
+    *errstr = "no or empty s3bucket statement";
+    goto ERROR1;
   }
 
   if (cfg->s3accesskey[0] == '\0') {
@@ -335,8 +344,7 @@ struct s3connection *get_s3_conn (struct config *cfg, unsigned int *num)
   int res;
 
   for (;;) {
-    if (*num >= cfg->num_s3fetchers * cfg->num_s3hosts * cfg->num_s3ports)
-      *num = 0;
+   *num %= cfg->num_s3fetchers * cfg->num_s3hosts * cfg->num_s3ports;
 
     conn = *num % cfg->num_s3fetchers;
     host = *num % cfg->num_s3hosts;
@@ -353,6 +361,7 @@ struct s3connection *get_s3_conn (struct config *cfg, unsigned int *num)
 
     ret->host = cfg->s3hosts[host];
     ret->port = cfg->s3ports[port];
+    ret->bucket = cfg->s3bucket;
 
     if (ret->sock < 0) {
       if (connect_s3(ret) != 0)
@@ -385,4 +394,162 @@ void release_s3_conn (struct s3connection *conn, int error)
   }
 
   pthread_mutex_unlock(&conn->mtx);
+}
+
+#if 0
+  if (gnutls_hash_fast(GNUTLS_DIG_MD5, data, data_len, b64) != GNUTLS_E_SUCCESS)
+#endif
+
+static int sha1_b64 (char *key, char *msg, char *b64)
+{
+  int res;
+
+  res = gnutls_hmac_fast(GNUTLS_MAC_SHA1, key, strlen(key), msg, strlen(msg),
+                         b64);
+  if (res != GNUTLS_E_SUCCESS)
+    return -1;
+
+  base64_encode_raw((uint8_t *) b64, 20, (uint8_t *) b64);
+  b64[BASE64_ENCODE_RAW_LENGTH(20)] = '\0';
+
+  return 0;
+}
+
+static int send_all (struct s3connection *conn, void *buffer, size_t to_write)
+{
+  size_t written;
+  ssize_t res;
+
+  for (written = 0; to_write > 0; written += res, to_write -= res) {
+    if (conn->is_ssl)
+      res = gnutls_record_send(conn->tls_sess, buffer + written, to_write);
+    else
+      res = write(conn->sock, buffer + written, to_write);
+
+    if ((res < 0) && (errno != EAGAIN) && (errno != EWOULDBLOCK) &&
+        (errno != EINTR))
+      return -1;
+  }
+
+  return 0;
+}
+
+static ssize_t read_s3 (struct s3connection *conn, void *buffer, size_t buflen)
+{
+  ssize_t ret;
+
+  if (conn->is_ssl)
+    ret = gnutls_record_send(conn->tls_sess, buffer, buflen);
+  else
+    ret = write(conn->sock, buffer, buflen);
+
+  if ((ret < 0) && (errno != EAGAIN) && (errno != EWOULDBLOCK) &&
+      (errno != EINTR))
+    return -1;
+
+  return ret;
+}
+
+int send_s3_request (struct config *cfg, struct s3connection *conn,
+                     char *httpverb, char *folder, char *filename, void *data,
+                     void *data_md5, size_t data_len)
+{
+  time_t now;
+  struct tm tm;
+  int url_start, is_put;
+  char date[32], string_to_sign[512], header[1024];
+  unsigned char md5b64[BASE64_ENCODE_RAW_LENGTH(16) + 1];
+
+  is_put = !strcmp(httpverb, "PUT");
+
+  time(&now);
+  gmtime_r(&now, &tm);
+  strftime(date, sizeof(date) - 1, "%a, %d %b %Y %T GMT", &tm);
+
+  if (is_put) {
+    base64_encode_raw(data_md5, 16, md5b64);
+    md5b64[BASE64_ENCODE_RAW_LENGTH(16)] = '\0';
+  }
+
+  snprintf(string_to_sign, sizeof(string_to_sign) - 1,
+           "%s\n" // http verb
+           "%s\n" // content md5
+           "\n"   // content type
+           "%s\n" // date
+           "%n/%s/%s",//%s",
+           httpverb, md5b64, date, &url_start, conn->bucket, //folder,
+           filename);
+
+  snprintf(header, sizeof(header) - 1,
+           "%s %s HTTP/1.1\r\n"
+           "Host: %s\r\n"
+           "Date: %s\r\n"
+           "User-Agent: s3nbd\r\n"
+           "Authorization: AWS %s:",
+           httpverb, string_to_sign + url_start, conn->host, date,
+           cfg->s3accesskey);
+
+  if (sha1_b64(cfg->s3secretkey, string_to_sign, header + strlen(header)) != 0)
+    return -1;
+
+  if (is_put)
+    snprintf(header + strlen(header), sizeof(header) - strlen(header) - 1,
+             "\r\nContent-Length: %lu", data_len);
+
+  strcat(header, "\r\n\r\n");
+
+  if (send_all(conn, header, strlen(header)) != 0)
+    return -1;
+
+  if (is_put && (send_all(conn, data, data_len) != 0))
+    return -1;
+
+  return 0;
+}
+
+int read_s3_request (struct s3connection *conn, unsigned short *code,
+                     size_t *contentlen, unsigned char *md5, char *buffer,
+                     size_t buflen)
+{
+  ssize_t len;
+  char *p;
+  unsigned char etag[32];
+  unsigned int i;
+
+  len = read_s3(conn, buffer, buflen - 1);
+  if (len < 0)
+    return -1;
+
+  buffer[len] = '\0';
+
+  if (strstr(buffer, "\r\n\r\n") == NULL)
+    goto ERROR;
+
+  if (sscanf(buffer, "HTTP/1.1 %hu", code) != 1)
+    goto ERROR;
+
+  if ((p = strstr(buffer, "Content-Length")) == NULL)
+    goto ERROR;
+  if (sscanf(p, "Content-Length: %lu", contentlen) != 1)
+    goto ERROR;
+
+  if ((p = strstr(buffer, "ETag")) == NULL)
+    goto ERROR;
+  if (sscanf(p, "ETag: \"%32s", etag) != 1)
+    goto ERROR;
+
+  for (i = 0; i < sizeof(etag); i++) {
+    if ((etag[i] >= '0') && (etag[i] <= '9'))
+      md5[i / 2] += etag[i] - '0';
+    else if ((etag[i] >= 'a') && (etag[i] <= 'f'))
+      md5[i / 2] += etag[i] - 'a' + 10;
+    else
+      goto ERROR;
+
+    if (i % 2 == 0)
+      md5[i / 2] <<= 4;
+  }
+
+ERROR:
+  return -1;
 }

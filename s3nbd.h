@@ -34,6 +34,7 @@ struct device {
 struct s3connection {
   char *host;
   char *port;
+  char *bucket;
   int sock;
   int is_ssl;
   gnutls_session_t tls_sess;
@@ -47,6 +48,7 @@ struct config {
   char s3ports[4][8];
   unsigned short num_s3ports;
   unsigned char s3ssl;
+  char s3bucket[128];
   char s3accesskey[128];
   char s3secretkey[128];
 
@@ -67,5 +69,11 @@ int load_config (char *configfile, struct config *cfg,
 int save_pidfile (char *pidfile);
 struct s3connection *get_s3_conn (struct config *cfg, unsigned int *num);
 void release_s3_conn (struct s3connection *conn, int error);
+int send_s3_request (struct config *cfg, struct s3connection *conn,
+                     char *httpverb, char *folder, char *filename, void *data,
+                     void *data_md5, size_t data_len);
+int read_s3_request (struct s3connection *conn, unsigned short *code,
+                     size_t *contentlen, unsigned char *etag, char *buffer,
+                     size_t buflen);
 
 #endif
