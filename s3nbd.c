@@ -120,7 +120,7 @@ static ssize_t write_all (int fd, const void *buffer, size_t len)
   return 0;
 }
 
-/* TODO */
+#if 0
 static int fetch_chunk (char *devicename, int fd, char *name)
 {
   int storedir_fd, store_fd, result = -1, res;
@@ -191,6 +191,69 @@ ERROR1:
     logerr("close(): %s", strerror(errno));
     result = -1;
   }
+
+ERROR:
+  return result;
+}
+#endif
+
+static int fetch_chunk (char *devicename, int fd, char *name)
+{
+  int result = -1, res;
+  unsigned int conn_num;
+  char uncompbuf[CHUNKSIZE], compbuf[COMPR_CHUNKSIZE];
+  const char *err_str;
+  struct s3connection *s3conn;
+  unsigned char md5[16];
+  unsigned short code;
+  size_t uncomplen, contentlen;
+
+  s3conn = s3_get_conn(&cfg, &conn_num, &err_str);
+  if (s3conn == NULL) {
+    logerr("s3_get_conn(): %s", err_str);
+    goto ERROR;
+  }
+
+  res = s3_request(&cfg, s3conn, &err_str, "GET", devicename, name,
+                   NULL, 0, NULL, &code, &contentlen, md5,
+                   compbuf, sizeof(compbuf));
+  if (res != 0) {
+    logerr("s3_request(): %s/%s/%s/%s: %s", s3conn->host, s3conn->bucket,
+           devicename, name, err_str);
+    goto ERROR1;
+  }
+
+  if (code == 200) {
+    uncomplen = sizeof(uncompbuf);
+    res = snappy_uncompress(compbuf, contentlen, uncompbuf, &uncomplen);
+    if (res != SNAPPY_OK) {
+      logerr("snappy_uncompress(): %s/%s/%s/%s: res=%i contentlen=%lu "
+             "uncompressed=%lu",
+             s3conn->host, s3conn->bucket, devicename, name, res, contentlen,
+             uncomplen);
+      goto ERROR1;
+    }
+    if (uncomplen != CHUNKSIZE) {
+      logerr("snappy_uncompress(): %s/%s/%s/%s: uncomplen %lu, expected %u",
+             s3conn->host, s3conn->bucket, devicename, name, uncomplen,
+             CHUNKSIZE);
+      goto ERROR1;
+    }
+  } else if (code == 404) {
+    memset(uncompbuf, 0, sizeof(uncompbuf));
+  } else {
+    logerr("s3_request(): %s/%s/%s/%s: HTTP status %hu", s3conn->host,
+            s3conn->bucket, devicename, name, code);
+    goto ERROR1;
+  }
+
+  if (write_all(fd, uncompbuf, uncomplen) != 0)
+    goto ERROR1;
+
+  result = 0;
+
+ERROR1:
+  s3_release_conn(s3conn);
 
 ERROR:
   return result;
