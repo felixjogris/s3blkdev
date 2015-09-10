@@ -410,8 +410,9 @@ void s3_release_conn (struct s3connection *conn)
 {
   if (conn->is_error != 0) {
     if (conn->is_ssl != 0) {
-      gnutls_certificate_free_credentials(conn->tls_cred);
+      gnutls_bye(conn->tls_sess, GNUTLS_SHUT_RDWR);
       gnutls_deinit(conn->tls_sess);
+      gnutls_certificate_free_credentials(conn->tls_cred);
     }
 
     close(conn->sock);
@@ -446,14 +447,15 @@ static int s3_send_all (struct s3connection *conn, void *buffer,
 
   for (written = 0; to_write > 0; written += res, to_write -= res) {
     if (!conn->is_ssl) {
-      res = write(conn->sock, buffer + written, to_write);
+      res = write(conn->sock, buffer + written, MIN(to_write, 131072));
       if ((res < 0) && (errno != EAGAIN) && (errno != EWOULDBLOCK) &&
           (errno != EINTR)) {
         *errstr = strerror(errno);
         return -1;
       }
     } else for (;;) {
-      res = gnutls_record_send(conn->tls_sess, buffer + written, to_write);
+      res = gnutls_record_send(conn->tls_sess, buffer + written,
+                               MIN(to_write, 131072));
       if (res >= 0)
         break;
       if ((res != GNUTLS_E_INTERRUPTED) && (res != GNUTLS_E_AGAIN)) {
@@ -490,27 +492,40 @@ static ssize_t s3_read (struct s3connection *conn, void *buffer, size_t buflen,
     }
   }
 
+  if (ret == 0) {
+    *errstr = "connection closed";
+    return -1;
+  }
+
   return ret;
 }
 
+static const char *httpverb_to_string (enum httpverb verb)
+{
+  switch (verb) {
+    case GET:  return "GET";
+    case HEAD: return "HEAD";
+    case PUT:  return "PUT";
+    default:   return "FUCK";
+  }
+}
+
 static int s3_start_req (struct config *cfg, struct s3connection *conn,
-                         char *httpverb, char *folder, char *filename,
+                         enum httpverb verb, char *folder, char *filename,
                          void *data, size_t data_len, void *data_md5,
                          char const **errstr)
 {
   time_t now;
   struct tm tm;
-  int url_start, is_put, res;
+  int url_start, res;
   char date[32], string_to_sign[512], header[1024];
   unsigned char md5b64[BASE64_ENCODE_RAW_LENGTH(16) + 1];
-
-  is_put = !strcmp(httpverb, "PUT");
 
   time(&now);
   gmtime_r(&now, &tm);
   strftime(date, sizeof(date) - 1, "%a, %d %b %Y %T GMT", &tm);
 
-  if (is_put) {
+  if (verb == PUT) {
     base64_encode_raw(md5b64, 16, data_md5);
     md5b64[BASE64_ENCODE_RAW_LENGTH(16)] = '\0';
   } else
@@ -522,7 +537,8 @@ static int s3_start_req (struct config *cfg, struct s3connection *conn,
            "\n"   // content type
            "%s\n" // date
            "%n/%s/%s/%s",
-           httpverb, md5b64, date, &url_start, conn->bucket, folder, filename);
+           httpverb_to_string(verb), md5b64, date, &url_start, conn->bucket,
+           folder, filename);
 
   snprintf(header, sizeof(header) - 1,
            "%s %s HTTP/1.1\r\n"
@@ -530,15 +546,15 @@ static int s3_start_req (struct config *cfg, struct s3connection *conn,
            "Date: %s\r\n"
            "User-Agent: s3nbd\r\n"
            "Authorization: AWS %s:",
-           httpverb, string_to_sign + url_start, conn->host, date,
-           cfg->s3accesskey);
+           httpverb_to_string(verb), string_to_sign + url_start, conn->host,
+           date, cfg->s3accesskey);
 
   res = sha1_b64(cfg->s3secretkey, string_to_sign, header + strlen(header),
                  errstr);
   if (res != 0)
     return -1;
 
-  if (is_put)
+  if (verb == PUT)
     snprintf(header + strlen(header), sizeof(header) - strlen(header) - 1,
              "\r\n"
              "Content-Length: %lu\r\n"
@@ -550,29 +566,59 @@ static int s3_start_req (struct config *cfg, struct s3connection *conn,
   if (s3_send_all(conn, header, strlen(header), errstr) != 0)
     return -1;
 
-  if (is_put && (s3_send_all(conn, data, data_len, errstr) != 0))
+  if ((verb == PUT) && (s3_send_all(conn, data, data_len, errstr) != 0))
     return -1;
 
   return 0;
 }
 
-static int s3_finish_req (struct s3connection *conn, unsigned short *code,
-                          size_t *contentlen, unsigned char *md5, char *buffer,
+static int s3_scan_etag (char *option, unsigned char *md5, const char **errstr)
+{
+  unsigned char etag[32];
+  unsigned int i;
+
+  if (sscanf(option, "ETag: \"%32s", etag) != 1) {
+    *errstr = "invalid ETag";
+    return -1;
+  }
+
+  /* etag is lowercase hex */
+  for (i = 0; i < sizeof(etag); i++) {
+    if (i % 2 == 0)
+      md5[i / 2] = 0;
+
+    if ((etag[i] >= '0') && (etag[i] <= '9'))
+      md5[i / 2] |= etag[i] - '0';
+    else if ((etag[i] >= 'a') && (etag[i] <= 'f'))
+      md5[i / 2] |= etag[i] - 'a' + 10;
+    else {
+      *errstr = "ETag contains invalid character";
+      return -1;
+    }
+
+    if (i % 2 == 0)
+      md5[i / 2] <<= 4;
+  }
+
+  return 0;
+}
+
+static int s3_finish_req (struct s3connection *conn, enum httpverb verb,
+                          unsigned short *code, size_t *contentlen,
+                          unsigned char *md5, char *buffer,
                           size_t buflen, char const **errstr)
 {
   char header[1024];
   ssize_t res;
   size_t readbytes;
   char *option, *body;
-  unsigned char etag[32];
-  unsigned int i;
 
   readbytes = 0;
 
   for (;;) {
     res = s3_read(conn, header + readbytes, sizeof(header) - readbytes - 1,
                   errstr);
-    if (res < 0)
+    if (res <= 0)
       return -1;
 
     readbytes += res;
@@ -606,44 +652,23 @@ static int s3_finish_req (struct s3connection *conn, unsigned short *code,
     return -1;
   }
 
-  if ((option = strstr(header, "ETag")) == NULL) {
-    *errstr = "no ETag";
+  if (((option = strstr(header, "ETag")) != NULL) &&
+      (s3_scan_etag(option, md5, errstr) != 0))
     return -1;
-  }
-  if (sscanf(option, "ETag: \"%32s", etag) != 1) {
-    *errstr = "invalid ETag";
-    return -1;
-  }
-
-  /* etag is lowercase hex */
-  for (i = 0; i < sizeof(etag); i++) {
-    if (i % 2 == 0)
-      md5[i / 2] = 0;
-
-    if ((etag[i] >= '0') && (etag[i] <= '9'))
-      md5[i / 2] |= etag[i] - '0';
-    else if ((etag[i] >= 'a') && (etag[i] <= 'f'))
-      md5[i / 2] |= etag[i] - 'a' + 10;
-    else {
-      *errstr = "ETag contains invalid character";
-      return -1;
-    }
-
-    if (i % 2 == 0)
-      md5[i / 2] <<= 4;
-  }
 
   /* get rid of header */
   readbytes -= body - header;
   memmove(buffer, body, readbytes);
 
-  /* receive payload */
-  while (readbytes < *contentlen) {
-    res = s3_read(conn, buffer + readbytes, *contentlen - readbytes, errstr);
-    if (res <= 0)
-      return -1;
+  if ((verb != HEAD) || (*code != 200)) {
+    /* receive payload */
+    while (readbytes < *contentlen) {
+      res = s3_read(conn, buffer + readbytes, *contentlen - readbytes, errstr);
+      if (res <= 0)
+        return -1;
 
-    readbytes += res;
+      readbytes += res;
+    }
   }
 
   return 0;
@@ -651,7 +676,7 @@ static int s3_finish_req (struct s3connection *conn, unsigned short *code,
 
 int s3_request (struct config *cfg, struct s3connection *conn,
                 char const **errstr,
-                char *httpverb, char *folder, char *filename, void *data,
+                enum httpverb verb, char *folder, char *filename, void *data,
                 size_t data_len, void *data_md5,
                 unsigned short *code, size_t *contentlen, unsigned char *md5,
                 char *buffer, size_t buflen)
@@ -660,16 +685,17 @@ int s3_request (struct config *cfg, struct s3connection *conn,
 
   conn->is_error = 1;
 
-  res = s3_start_req(cfg, conn, httpverb, folder, filename, data, data_len,
+  res = s3_start_req(cfg, conn, verb, folder, filename, data, data_len,
                      data_md5, errstr);
   if (res != 0)
     return -1;
 
-  res = s3_finish_req(conn, code, contentlen, md5, buffer, buflen, errstr);
+  res = s3_finish_req(conn, verb, code, contentlen, md5, buffer, buflen,
+                      errstr);
   if (res != 0)
     return -1;
 
-  conn->is_error = 0;
+  conn->is_error = (*code != 200);
 
   return 0;
 }

@@ -214,7 +214,7 @@ static int fetch_chunk (char *devicename, int fd, char *name)
     goto ERROR;
   }
 
-  res = s3_request(&cfg, s3conn, &err_str, "GET", devicename, name,
+  res = s3_request(&cfg, s3conn, &err_str, GET, devicename, name,
                    NULL, 0, NULL, &code, &contentlen, md5,
                    compbuf, sizeof(compbuf));
   if (res != 0) {
@@ -247,7 +247,7 @@ static int fetch_chunk (char *devicename, int fd, char *name)
     goto ERROR1;
   }
 
-  if (write_all(fd, uncompbuf, uncomplen) != 0)
+  if (write_all(fd, uncompbuf, CHUNKSIZE) != 0)
     goto ERROR1;
 
   result = 0;
@@ -399,8 +399,10 @@ static int io_open_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
     if (st.st_size == CHUNKSIZE)
       break;
 
-    if (fetch_chunk(arg->devicename, fd, name) != 0)
-      goto ERROR1;
+/* TODO */
+    while (fetch_chunk(arg->devicename, fd, name) != 0)
+      ;;
+//      goto ERROR1;
 
     break;
   }

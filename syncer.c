@@ -248,7 +248,7 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
     goto ERROR2;
   }
 
-  res = s3_request(cfg, s3conn, &err_str, "HEAD", dev->name, name, NULL, 0,
+  res = s3_request(cfg, s3conn, &err_str, HEAD, dev->name, name, NULL, 0,
                    local_md5, &code, &contentlen, remote_md5, buf,
                    sizeof(buf));
   if (res != 0) {
@@ -276,7 +276,7 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
       goto ERROR2;
     }
 
-    res = s3_request(cfg, s3conn, &err_str, "PUT", dev->name, name, compbuf,
+    res = s3_request(cfg, s3conn, &err_str, PUT, dev->name, name, compbuf,
                      comprlen, local_md5, &code, &contentlen, remote_md5, buf,
                      sizeof(buf));
     if (res != 0) {

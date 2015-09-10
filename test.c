@@ -37,7 +37,7 @@ int main ()
   if (res != GNUTLS_E_SUCCESS)
     errx(1, "gnutls_hash_fast(): %s", gnutls_strerror(res));
 
-  res = s3_request(&cfg, s3conn, &err_str, "GET", "folder1", "test.txt",
+  res = s3_request(&cfg, s3conn, &err_str, GET, "folder1", "test.txt",
                    content, strlen(content), md5, &code, &contentlen, md5,
                    buffer, sizeof(buffer));
   fprintf(stderr, "res=%i code=%hu contentlen=%lu err_str=%s md5=0x",

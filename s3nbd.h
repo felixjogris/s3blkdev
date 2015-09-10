@@ -25,6 +25,14 @@
 #define MAX_IO_THREADS 128
 #define DEVNAME_SIZE 64
 
+#define MIN(a,b) ((a)>(b)?(b):(a))
+
+enum httpverb {
+  GET,
+  HEAD,
+  PUT
+};
+
 struct device {
   char name[DEVNAME_SIZE];
   char cachedir[PATH_MAX];
@@ -73,7 +81,7 @@ struct s3connection *s3_get_conn (struct config *cfg, unsigned int *num,
 void s3_release_conn (struct s3connection *conn);
 int s3_request (struct config *cfg, struct s3connection *conn,
                 char const **errstr,
-                char *httpverb, char *folder, char *filename, void *data,
+                enum httpverb verb, char *folder, char *filename, void *data,
                 size_t data_len, void *data_md5,
                 unsigned short *code, size_t *contentlen, unsigned char *md5,
                 char *buffer, size_t buflen);
