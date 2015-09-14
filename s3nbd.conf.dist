@@ -1,0 +1,22 @@
+#
+# s3nbd.conf
+#
+# default config
+#
+
+listen /tmp/s3nbd.sock
+port 1089
+workers 8
+fetchers 2
+
+s3host 
+s3port 
+s3ssl 1
+s3accesskey 
+s3secretkey 
+s3bucket 
+s3timeout 10000
+
+# [device1]
+# cachedir /ssd/device1
+# size 200000000000
