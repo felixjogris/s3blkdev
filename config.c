@@ -6,6 +6,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -18,8 +19,14 @@
 
 #include "s3nbd.h"
 
+/* integer to string by preprocessor */
 #define XSTR(a) #a
 #define STR(a) XSTR(a)
+
+enum readwrite {
+  READ,
+  WRITE
+};
 
 static int is_comment (char *line)
 {
@@ -31,7 +38,7 @@ static int is_empty (char *line)
   char *p;
 
   for (p = line; *p != '\0'; p++)
-    if (isspace(*p))
+    if (!isspace(*p))
       return 0;
 
   return 1;
@@ -40,6 +47,70 @@ static int is_empty (char *line)
 static int is_incomplete (char *line)
 {
   return ((strlen(line) == 0) || (line[strlen(line) - 1] != '\n'));
+}
+
+static int validate_config (struct config *cfg, char const **errstr)
+{
+  if (cfg->listen[0] == '\0') {
+    *errstr = "no or empty listen statement";
+    return -1;
+  }
+
+  if ((cfg->listen[0] != '/') && (cfg->port[0] == '\0')) {
+    *errstr = "no or empty port statement and listen is not a unix socket";
+    return -1;
+  }
+
+  if (cfg->num_io_threads == 0) {
+    *errstr = "number of workers must not be zero";
+    return -1;
+  }
+
+  if (cfg->num_io_threads >= MAX_IO_THREADS) {
+    *errstr = "number of workers too large (max. " STR(MAX_IO_THREADS) ")";
+    return -1;
+  }
+
+  if (cfg->num_s3fetchers == 0) {
+    *errstr = "number of fetchers must not be zero";
+    return -1;
+  }
+
+  if (cfg->num_s3fetchers > cfg->num_io_threads) {
+    *errstr = "number of fetchers must not exceed number of workers";
+    return -1;
+  }
+
+  if (cfg->num_s3hosts == 0) {
+    *errstr = "no s3hosts";
+    return -1;
+  }
+
+  if (cfg->num_s3ports == 0) {
+    if (!cfg->s3ssl) {
+      *errstr = "no s3ports and s3ssl not set";
+    return -1;
+    }
+    cfg->num_s3ports = 1;
+    strcpy(cfg->s3ports[0], "443");
+  }
+
+  if (cfg->s3bucket[0] == '\0') {
+    *errstr = "no or empty s3bucket statement";
+    return -1;
+  }
+
+  if (cfg->s3accesskey[0] == '\0') {
+    *errstr = "no or empty s3accesskey statement";
+    return -1;
+  }
+
+  if (cfg->s3secretkey[0] == '\0') {
+    *errstr = "no or empty s3secretkey statement";
+    return -1;
+  }
+
+  return 0;
 }
 
 int load_config (char *configfile, struct config *cfg,
@@ -52,7 +123,15 @@ int load_config (char *configfile, struct config *cfg,
 
   *err_line = 0;
 
+  /* set default config, prepare mutexes for connection slots */
   memset(cfg, 0, sizeof(*cfg));
+  cfg->listen = "/tmp/s3nbd.sock";
+  cfg->port = "1089";
+  cfg->num_io_threads = 8;
+  cfg->num_s3fetchers = 2;
+  cfg->s3timeout = 10000; // ms
+  cfg->s3ssl = 1;
+
   for (i = 0; i < sizeof(cfg->s3conns)/sizeof(cfg->s3conns[0]); i++) {
     cfg->s3conns[i].sock = -1;
     if (pthread_mutex_init(&cfg->s3conns[i].mtx, NULL) != 0)
@@ -98,12 +177,14 @@ int load_config (char *configfile, struct config *cfg,
         sscanf(line, " port %7[0-9]", cfg->port) ||
         sscanf(line, " workers %hu", &cfg->num_io_threads) ||
         sscanf(line, " fetchers %hu", &cfg->num_s3fetchers) ||
+        sscanf(line, " s3timeout %u", &cfg->s3timeout) ||
         sscanf(line, " s3ssl %hhu", &cfg->s3ssl) ||
         sscanf(line, " s3bucket %127s", cfg->s3bucket) ||
         sscanf(line, " s3accesskey %127s", cfg->s3accesskey) ||
         sscanf(line, " s3secretkey %127s", cfg->s3secretkey))
       continue;
 
+    /* s3host */
     if (sscanf(line, " s3host %255s", tmp)) {
       if (cfg->num_s3hosts >= sizeof(cfg->s3hosts)/sizeof(cfg->s3hosts[0])) {
         *errstr = "too many S3 hosts";
@@ -116,6 +197,7 @@ int load_config (char *configfile, struct config *cfg,
       continue;
     }
 
+    /* s3port */
     if (sscanf(line, " s3port %7[0-9]", tmp)) {
       if (cfg->num_s3ports >= sizeof(cfg->s3ports)/sizeof(cfg->s3ports[0])) {
         *errstr = "too many S3 ports";
@@ -128,6 +210,7 @@ int load_config (char *configfile, struct config *cfg,
       continue;
     }
 
+    /* device */
     if (sscanf(line, " [%63[^]]", tmp)) {
       if (cfg->num_devices >= sizeof(cfg->devs)/sizeof(cfg->devs[0])) {
         *errstr = "too many devices";
@@ -150,67 +233,7 @@ int load_config (char *configfile, struct config *cfg,
   }
 
   *err_line = 0;
-
-  if (cfg->listen[0] == '\0') {
-    *errstr = "no or empty listen statement";
-    goto ERROR1;
-  }
-
-  if (cfg->port[0] == '\0') {
-    *errstr = "no or empty port statement";
-    goto ERROR1;
-  }
-
-  if (cfg->num_io_threads == 0) {
-    *errstr = "number of workers must not be zero";
-    goto ERROR1;
-  }
-
-  if (cfg->num_io_threads >= MAX_IO_THREADS) {
-    *errstr = "number of workers too large (max. " STR(MAX_IO_THREADS) ")";
-    goto ERROR1;
-  }
-
-  if (cfg->num_s3fetchers == 0) {
-    *errstr = "number of fetchers must not be zero";
-    goto ERROR1;
-  }
-
-  if (cfg->num_s3fetchers > cfg->num_io_threads) {
-    *errstr = "number of fetchers must not exceed number of workers";
-    goto ERROR1;
-  }
-
-  if (cfg->num_s3hosts == 0) {
-    *errstr = "no s3hosts";
-    goto ERROR1;
-  }
-
-  if (cfg->num_s3ports == 0) {
-    if (!cfg->s3ssl) {
-      *errstr = "no s3ports and s3ssl not set";
-      goto ERROR1;
-    }
-    cfg->num_s3ports = 1;
-    strcpy(cfg->s3ports[0], "443");
-  }
-
-  if (cfg->s3bucket[0] == '\0') {
-    *errstr = "no or empty s3bucket statement";
-    goto ERROR1;
-  }
-
-  if (cfg->s3accesskey[0] == '\0') {
-    *errstr = "no or empty s3accesskey statement";
-    goto ERROR1;
-  }
-
-  if (cfg->s3secretkey[0] == '\0') {
-    *errstr = "no or empty s3secretkey statement";
-    goto ERROR1;
-  }
-
-  result = 0;
+  result = validate_config(cfg, errstr);;
 
 ERROR1:
   if (ferror(fh)) {
@@ -251,6 +274,7 @@ int save_pidfile (char *pidfile)
   if (write(fd, pid, len) != len)
     return -1;
 
+  /* leave fd open intentionally */
   return 0;
 }
 
@@ -335,7 +359,8 @@ static int s3_tls_setup (struct s3connection *conn, char const **errstr)
   gnutls_transport_set_pull_timeout_function(conn->tls_sess,
                                              gnutls_system_recv_timeout);
 #endif
-  gnutls_handshake_set_timeout(conn->tls_sess, GNUTLS_DEFAULT_HANDSHAKE_TIMEOUT);
+  gnutls_handshake_set_timeout(conn->tls_sess,
+                               GNUTLS_DEFAULT_HANDSHAKE_TIMEOUT);
   gnutls_record_set_timeout(conn->tls_sess, 10000);
 
   if (s3_tls_handshake(conn, errstr) != 0)
@@ -358,35 +383,34 @@ ERROR:
   return -1;
 }
 
-struct s3connection *s3_get_conn (struct config *cfg, unsigned int *num,
+struct s3connection *s3_get_conn (struct config *cfg, unsigned int *conn_num,
                                   char const **errstr)
 {
   struct s3connection *ret;
-  unsigned int conn, host, port;
+  unsigned int host, port;
   int res;
 
   for (;;) {
-    *num %= cfg->num_s3fetchers * cfg->num_s3hosts * cfg->num_s3ports;
+    *conn_num %= MAX(cfg->num_s3fetchers, cfg->num_s3hosts * cfg->num_s3ports);
 
-    conn = *num % cfg->num_s3fetchers;
-    host = *num % cfg->num_s3hosts;
-    port = (*num / cfg->num_s3hosts) % cfg->num_s3ports;
+    /* prefer different host over different port */
+    host = *conn_num % cfg->num_s3hosts;
+    port = (*conn_num / cfg->num_s3hosts) % cfg->num_s3ports;
 
-    *num += 1;
+    *conn_num += 1;
 
-    ret = &cfg->s3conns[conn];
+    ret = &cfg->s3conns[*conn_num];
     res = pthread_mutex_trylock(&ret->mtx);
 
-    if (res == 0) { /* no-op */ }
-    else if (res == EBUSY) continue;
-    else {
+    if (res == EBUSY) continue;
+    if (res != 0) {
       *errstr = strerror(res);
       return NULL;
     }
 
     ret->host = cfg->s3hosts[host];
     ret->port = cfg->s3ports[port];
-    ret->bucket = cfg->s3bucket;
+    ret->timeout = cfg->s3timeout;
 
     if (ret->sock < 0) {
       if (s3_connect(ret, errstr) != 0)
@@ -439,6 +463,37 @@ static int sha1_b64 (char *key, char *msg, char *b64, char const **errstr)
   return 0;
 }
 
+static int s3_wait_for_socket (struct s3connection *conn, enum readwrite mode,
+                               char const **errstr)
+{
+  fd_set fds;
+  struct timeval timeout;
+  int res;
+
+  FD_ZERO(&fds);
+  FD_SET(conn->sock, &fds);
+
+  timeout.tv_sec = conn->timeout / 1000;
+  timeout.tv_usec = (conn->timout % 1000) * 1000;
+
+  if (mode == READ)
+    res = select(conn->sock + 1, &fds, NULL, NULL, &timeout);
+  else
+    res = select(conn->sock + 1, NULL, &fds, NULL, &timeout);
+
+  if (res > 0)
+    return 0;
+
+  if (res < 0)
+    *errstr = strerror(errno);
+  else if (mode == READ)
+    *errstr = "timeout while reading from net";
+  else
+    *errstr = "timeout while writing to net";
+
+  return -1;
+}
+
 static int s3_send_all (struct s3connection *conn, void *buffer,
                         size_t to_write, char const **errstr)
 {
@@ -447,6 +502,9 @@ static int s3_send_all (struct s3connection *conn, void *buffer,
 
   for (written = 0; to_write > 0; written += res, to_write -= res) {
     if (!conn->is_ssl) {
+      if (s3_wait_for_socket(conn, WRITE, errstr) != 0)
+        return -1;
+
       res = write(conn->sock, buffer + written, MIN(to_write, 131072));
       if ((res < 0) && (errno != EAGAIN) && (errno != EWOULDBLOCK) &&
           (errno != EINTR)) {
@@ -468,12 +526,15 @@ static int s3_send_all (struct s3connection *conn, void *buffer,
   return 0;
 }
 
-static ssize_t s3_read (struct s3connection *conn, void *buffer, size_t buflen,
+static ssize_t s3_recv (struct s3connection *conn, void *buffer, size_t buflen,
                         char const **errstr)
 {
   ssize_t ret;
 
   if (!conn->is_ssl) {
+    if (s3_wait_for_socket(conn, READ, errstr) != 0)
+      return -1;
+
     ret = read(conn->sock, buffer, buflen);
     if ((ret < 0) && (errno != EAGAIN) && (errno != EWOULDBLOCK) &&
         (errno != EINTR)) {
@@ -537,7 +598,7 @@ static int s3_start_req (struct config *cfg, struct s3connection *conn,
            "\n"   // content type
            "%s\n" // date
            "%n/%s/%s/%s",
-           httpverb_to_string(verb), md5b64, date, &url_start, conn->bucket,
+           httpverb_to_string(verb), md5b64, date, &url_start, cfg->bucket,
            folder, filename);
 
   snprintf(header, sizeof(header) - 1,
@@ -616,7 +677,7 @@ static int s3_finish_req (struct s3connection *conn, enum httpverb verb,
   readbytes = 0;
 
   for (;;) {
-    res = s3_read(conn, header + readbytes, sizeof(header) - readbytes - 1,
+    res = s3_recv(conn, header + readbytes, sizeof(header) - readbytes - 1,
                   errstr);
     if (res <= 0)
       return -1;
@@ -652,6 +713,7 @@ static int s3_finish_req (struct s3connection *conn, enum httpverb verb,
     return -1;
   }
 
+  /* etag is content md5 */
   if (((option = strstr(header, "ETag")) != NULL) &&
       (s3_scan_etag(option, md5, errstr) != 0))
     return -1;
@@ -663,7 +725,7 @@ static int s3_finish_req (struct s3connection *conn, enum httpverb verb,
   if ((verb != HEAD) || (*code != 200)) {
     /* receive payload */
     while (readbytes < *contentlen) {
-      res = s3_read(conn, buffer + readbytes,
+      res = s3_recv(conn, buffer + readbytes,
                     MIN(*contentlen - readbytes, 131072), errstr);
       if (res <= 0)
         return -1;

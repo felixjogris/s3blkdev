@@ -26,6 +26,7 @@
 #define DEVNAME_SIZE 64
 
 #define MIN(a,b) ((a)>(b)?(b):(a))
+#define MAX(a,b) ((a)<(b)?(b):(a))
 
 enum httpverb {
   GET,
@@ -42,10 +43,10 @@ struct device {
 struct s3connection {
   char *host;
   char *port;
-  char *bucket;
   int sock;
   int is_ssl;
   int is_error;
+  unsigned int timeout;
   gnutls_session_t tls_sess;
   gnutls_certificate_credentials_t tls_cred;
   pthread_mutex_t mtx;
@@ -63,6 +64,7 @@ struct config {
 
   struct s3connection s3conns[MAX_IO_THREADS]; // max(s3hosts*s3ports, num_io_threads<=MAX_IO_THREADS)
 
+  unsigned int s3timeout;
   unsigned short num_io_threads;
   unsigned short num_s3fetchers;
 
@@ -76,7 +78,7 @@ struct config {
 int load_config (char *configfile, struct config *cfg,
                  unsigned int *err_line, char const **errstr);
 int save_pidfile (char *pidfile);
-struct s3connection *s3_get_conn (struct config *cfg, unsigned int *num,
+struct s3connection *s3_get_conn (struct config *cfg, unsigned int *conn_num,
                                   char const **errstr);
 void s3_release_conn (struct s3connection *conn);
 int s3_request (struct config *cfg, struct s3connection *conn,

@@ -72,6 +72,7 @@ int main (int argc, char **argv)
     case 'w': cmd = F_OFD_SETLKW; break;
     default:  cmd = F_OFD_GETLK;  break;
   }
+
   type = (argv[2][0] == 'w' ? F_WRLCK : F_RDLCK);
   start = atol(argv[3]);
   end = atol(argv[4]);

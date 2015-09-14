@@ -15,9 +15,9 @@
 #include <fcntl.h>
 #include <gnutls/gnutls.h>
 #include <gnutls/crypto.h>
+#include <snappy-c.h>
 
 #include "s3nbd.h"
-#include "snappy-c.h"
 
 #define errdiex(fmt, params ...) { \
   syslog(LOG_ERR, "%s (%s:%i): " fmt "\n", \
@@ -39,6 +39,12 @@
 #define logwarn(fmt, params ...) \
   logwarnx(fmt ": %s", ## params, strerror(errno))
 
+enum eviction_mode {
+  SYNC_ONLY,
+  DELETE_IF_EQUAL,
+  SYNC_AND_DELETE
+};
+
 struct chunk_entry {
   time_t atime;
   char name[17];
@@ -49,8 +55,9 @@ int running = 1;
 char buf[COMPR_CHUNKSIZE], compbuf[COMPR_CHUNKSIZE];
 
 #if 0
+/* demo, stores chunk not in S3, but in /var/tmp/<cachedir>.store */
 static void sync_chunk (struct config *cfg, struct device *dev, char *name,
-                        int evict)
+                        enum eviction_mode evict)
 {
   int dir_fd, fd, storedir_fd, store_fd, equal, res;
   struct flock flk;
@@ -64,13 +71,14 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
     goto ERROR;
   }
 
-  fd = openat(dir_fd, name, (evict ? O_RDWR : O_RDONLY) | O_NOATIME);
+  fd = openat(dir_fd, name,
+              (evict == SYNC_ONLY ? O_RDONLY : O_RDWR) | O_NOATIME);
   if (fd < 0) {
     logwarn("open(): %s/%s", dev->cachedir, name);
     goto ERROR1;
   }
 
-  flk.l_type = (evict ? F_WRLCK : F_RDLCK);
+  flk.l_type = (evict == SYNC_ONLY ? F_RDLCK : F_WRLCK);
   flk.l_whence = SEEK_SET;
   flk.l_start = 0;
   flk.l_len = CHUNKSIZE;
@@ -124,7 +132,7 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
              (memcmp(buf, compbuf, comprlen) == 0));
   }
 
-  if (!equal && (evict != 1)) {
+  if (!equal && (evict != DELETE_IF_EQUAL)) {
     if ((store_fd >= 0) && (close(store_fd) < 0)) {
       logwarn("close(): %s/%s", sdpath, name);
       goto ERROR3;
@@ -145,7 +153,7 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
     syslog(LOG_INFO, "synced %s/%s\n", dev->cachedir, name);
   }
 
-  if ((equal && (evict == 1)) || (evict == 2)) {
+  if ((equal && (evict == DELETE_IF_EQUAL)) || (evict == SYNC_AND_DELETE)) {
     if (unlinkat(dir_fd, name, 0) != 0) {
       logwarn("unlinkat(): %s/%s", dev->cachedir, name);
       goto ERROR4;
@@ -177,7 +185,7 @@ ERROR:
 #endif
 
 static void sync_chunk (struct config *cfg, struct device *dev, char *name,
-                        int evict)
+                        enum eviction_mode evict)
 {
   int dir_fd, fd, equal, res;
   struct flock flk;
@@ -196,13 +204,15 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
     goto ERROR;
   }
 
-  fd = openat(dir_fd, name, (evict ? O_RDWR : O_RDONLY) | O_NOATIME);
+  /* open and lock chunk */
+  fd = openat(dir_fd, name,
+              (evict == SYNC_ONLY ? O_RDONLY : O_RDWR) | O_NOATIME);
   if (fd < 0) {
     logwarn("open(): %s/%s", dev->cachedir, name);
     goto ERROR1;
   }
 
-  flk.l_type = (evict ? F_WRLCK : F_RDLCK);
+  flk.l_type = (evict == SYNC_ONLY ? F_RDLCK : F_WRLCK);
   flk.l_whence = SEEK_SET;
   flk.l_start = 0;
   flk.l_len = CHUNKSIZE;
@@ -219,16 +229,19 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
   }
 
   if (st.st_size != CHUNKSIZE) {
+    /* chunk is being fetched by s3nbd */
     logwarnx("%s/%s: filesize %lu != CHUNKSIZE",
              dev->cachedir, name, st.st_size);
     goto ERROR2;
   }
 
+  /* read chunk */
   if (read(fd, buf, CHUNKSIZE) != CHUNKSIZE) {
     logwarn("read(): %s/%s", dev->cachedir, name);
     goto ERROR2;
   }
 
+  /* uncompress chunk */
   comprlen = sizeof(compbuf);
   res = snappy_compress(buf, CHUNKSIZE, compbuf, &comprlen);
   if (res != SNAPPY_OK) {
@@ -236,12 +249,14 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
     goto ERROR2;
   }
 
+  /* get md5 of chunk */
   res = gnutls_hash_fast(GNUTLS_DIG_MD5, compbuf, comprlen, local_md5);
   if (res != GNUTLS_E_SUCCESS) {
     logwarn("gnutls_hash_fast(): %s", gnutls_strerror(res));
     goto ERROR2;
   }
 
+  /* fetch md5 (etag) */
   s3conn = s3_get_conn(cfg, &conn_num, &err_str);
   if (s3conn == NULL) {
     logwarn("s3_get_conn(): %s", err_str);
@@ -258,8 +273,10 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
   }
 
   if (code == 200) {
+    /* found chunk, compare md5 checksum to local one */
     equal = !memcmp(local_md5, remote_md5, 16);
   } else if (code == 404) {
+    /* chunk not found */
     equal = 0;
   } else {
     logwarn("s3_request(): %s/%s/%s/%s: HTTP status %hu", s3conn->host,
@@ -267,7 +284,8 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
     goto ERROR3;
   }
 
-  if (!equal && (evict != 1)) {
+  if (!equal && (evict != DELETE_IF_EQUAL)) {
+    /* upload chunk */
     s3_release_conn(s3conn);
 
     s3conn = s3_get_conn(cfg, &conn_num, &err_str);
@@ -294,7 +312,7 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
     syslog(LOG_INFO, "synced %s/%s\n", dev->cachedir, name);
   }
 
-  if ((equal && (evict == 1)) || (evict == 2)) {
+  if ((equal && (evict == DELETE_IF_EQUAL)) || (evict == SYNC_AND_DELETE)) {
     if (unlinkat(dir_fd, name, 0) != 0) {
       logwarn("unlinkat(): %s/%s", dev->cachedir, name);
       goto ERROR3;
@@ -320,12 +338,11 @@ ERROR:
 }
 
 static int read_cache_dir (char *cachedir, struct chunk_entry **chunks,
-                           size_t *num_chunks)
+                           size_t *num_chunks, size_t *size_chunks)
 {
   DIR *dir;
   struct dirent *entry;
   struct stat st;
-  size_t size_chunks = 0;
   int result = -1;
 
   dir = opendir(cachedir);
@@ -334,6 +351,7 @@ static int read_cache_dir (char *cachedir, struct chunk_entry **chunks,
     goto ERROR;
   }
 
+  /* read cachedir, save name and access time of each chunk */
   for (*num_chunks = 0, errno = 0; (entry = readdir(dir)) != NULL; errno = 0) {
     if ((entry->d_type != DT_REG) || (strlen(entry->d_name) != 16))
       continue;
@@ -348,9 +366,9 @@ static int read_cache_dir (char *cachedir, struct chunk_entry **chunks,
     if (st.st_size != CHUNKSIZE)
       continue;
 
-    if (*num_chunks >= size_chunks) {
-      size_chunks += 4096;
-      *chunks = realloc(*chunks, sizeof(struct chunk_entry) * size_chunks);
+    if (*num_chunks >= *size_chunks) {
+      *size_chunks = *size_chunks * 2 + 4096;
+      *chunks = realloc(*chunks, sizeof(struct chunk_entry) * *size_chunks);
       if (*chunks == NULL)
         errdiex("realloc() failed");
     }
@@ -389,10 +407,12 @@ static int eviction_needed (char *cachedir, unsigned int max_used_pct)
     return 0;
   }
 
+  /* eviction needed if used space or inodes are above max_used_pct */
   return ((fs.f_bavail * 100 / fs.f_blocks < min_free_pct) ||
           (fs.f_ffree * 100 / fs.f_files < min_free_pct));
 }
 
+/* qsort() callback, sort by ascending access times */
 static int compare_atimes (const void *a0, const void *b0)
 {
   struct chunk_entry *a = (struct chunk_entry*) a0;
@@ -416,7 +436,7 @@ static void setup_signals ()
   if (sigfillset(&sigset) != 0)
     errdie("sigfillset()");
 
-  if ((sigdelset(&sigset, SIGTERM) != 0) || (sigdelset(&sigset, SIGHUP) != 0))
+  if (sigdelset(&sigset, SIGTERM) != 0)
     errdie("sigdelset()");
 
   if (sigprocmask(SIG_SETMASK, &sigset, NULL) != 0)
@@ -446,7 +466,7 @@ static void show_help ()
 int main (int argc, char **argv)
 {
   int res;
-  size_t num_chunks, i;
+  size_t num_chunks, size_chunks = 0, i;
   long l;
   struct chunk_entry *chunks = NULL;
   enum { SYNCER, EVICTOR } mode;
@@ -501,28 +521,35 @@ int main (int argc, char **argv)
   for (devnum = 0; devnum < cfg.num_devices; devnum++) {
     dev = &cfg.devs[devnum];
 
-    if (read_cache_dir(dev->cachedir, &chunks, &num_chunks) != 0)
+    if (read_cache_dir(dev->cachedir, &chunks, &num_chunks, &size_chunks) != 0)
       continue;
 
     qsort(chunks, num_chunks, sizeof(chunks[0]), compare_atimes);
 
     if (mode == SYNCER) {
+      /* just upload modified chunks, start with chunk that has been modified
+         most recently */
       for (l = num_chunks - 1; (l >= 0) && running; l--)
-        sync_chunk(&cfg, dev, chunks[l].name, 0);
+        sync_chunk(&cfg, dev, chunks[l].name, SYNC_ONLY);
     } else if (eviction_needed(dev->cachedir, max_used_pct)) {
+      /* first round of eviction, delete local chunks which have already been
+         uploaded */
       for (i = 0; (i < num_chunks) && running; i++) {
         if (eviction_needed(dev->cachedir, min_used_pct))
-          sync_chunk(&cfg, dev, chunks[i].name, 1);
+          sync_chunk(&cfg, dev, chunks[i].name, DELETE_IF_EQUAL);
         else
           break;
       }
 
+      /* second round of eviction, upload and delete local chunks until
+         free space is below given percentage */
       for (i = 0; (i < num_chunks) && running; i++) {
+        /* chunk was deleted during first round of eviction */
         if (chunks[i].name[0] == '\0')
           continue;
 
         if (eviction_needed(dev->cachedir, min_used_pct))
-          sync_chunk(&cfg, dev, chunks[i].name, 2);
+          sync_chunk(&cfg, dev, chunks[i].name, SYNC_AND_DELETE);
         else
           break;
       }

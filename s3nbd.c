@@ -21,9 +21,9 @@
 #include <sys/resource.h>
 #include <gnutls/gnutls.h>
 #include <pthread.h>
+#include <snappy-c.h>
 
 #include "s3nbd.h"
-#include "snappy-c.h"
 
 #define logerr(fmt, params ...) syslog(LOG_ERR, "%s (%s:%i): " fmt "\n", \
   __FUNCTION__, __FILE__, __LINE__, ## params)
@@ -84,7 +84,7 @@ struct io_thread_arg {
 };
 
 int running = 1;
-struct io_thread_arg io_threads[128];
+struct io_thread_arg io_threads[MAX_IO_THREADS];
 struct config cfg;
 
 static ssize_t read_all (int fd, void *buffer, size_t len)
@@ -121,6 +121,7 @@ static ssize_t write_all (int fd, const void *buffer, size_t len)
 }
 
 #if 0
+/* demo, fetches chunks from /var/tmp/<devicename>.store */
 static int fetch_chunk (char *devicename, int fd, char *name)
 {
   int storedir_fd, store_fd, result = -1, res;
@@ -461,6 +462,7 @@ static int io_read_chunks (struct io_thread_arg *arg)
   while (start_chunk < end_chunk) {
     if (io_read_chunk(arg, start_chunk, start_offs, CHUNKSIZE, &pos) != 0)
       goto ERROR;
+
     start_chunk++;
     start_offs = 0;
   }
@@ -513,6 +515,7 @@ static int io_write_chunks (struct io_thread_arg *arg)
   while (start_chunk < end_chunk) {
     if (io_write_chunk(arg, start_chunk, start_offs, CHUNKSIZE, &pos) != 0)
       goto ERROR;
+
     start_chunk++;
     start_offs = 0;
   }
@@ -1151,16 +1154,22 @@ static void join_io_workers ()
   for (i = 0; i < cfg.num_io_threads; i++) {
     if ((res = pthread_mutex_lock(&io_threads[i].wakeup_mtx)) != 0)
       syslog(LOG_ERR, "pthread_mutex_lock(): %s", strerror(res));
+
     if ((res = pthread_cond_signal(&io_threads[i].wakeup_cond)) != 0)
       syslog(LOG_ERR, "pthread_cond_signal(): %s", strerror(res));
+
     if ((res = pthread_mutex_unlock(&io_threads[i].wakeup_mtx)) != 0)
       syslog(LOG_ERR, "pthread_mutex_unlock(): %s", strerror(res));
+
     if ((res = pthread_join(io_threads[i].thread, NULL)) != 0)
       syslog(LOG_ERR, "pthread_join(): %s", strerror(res));
+
     if ((res = pthread_mutex_destroy(&io_threads[i].wakeup_mtx)) != 0)
       syslog(LOG_ERR, "pthread_mutex_destroy(): %s", strerror(res));
+
     if ((res = pthread_cond_destroy(&io_threads[i].wakeup_cond)) != 0)
       syslog(LOG_ERR, "pthread_cond_destroy(): %s", strerror(res));
+
     free(io_threads[i].buffer);
   }
 }
