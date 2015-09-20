@@ -125,8 +125,8 @@ int load_config (char *configfile, struct config *cfg,
 
   /* set default config, prepare mutexes for connection slots */
   memset(cfg, 0, sizeof(*cfg));
-  cfg->listen = "/tmp/s3nbd.sock";
-  cfg->port = "1089";
+  strcpy(cfg->listen, "/tmp/s3nbd.sock");
+  strcpy(cfg->port, "1089");
   cfg->num_io_threads = 8;
   cfg->num_s3fetchers = 2;
   cfg->s3timeout = 10000; // ms
@@ -410,6 +410,7 @@ struct s3connection *s3_get_conn (struct config *cfg, unsigned int *conn_num,
 
     ret->host = cfg->s3hosts[host];
     ret->port = cfg->s3ports[port];
+    ret->bucket = cfg->s3bucket;
     ret->timeout = cfg->s3timeout;
 
     if (ret->sock < 0) {
@@ -474,7 +475,7 @@ static int s3_wait_for_socket (struct s3connection *conn, enum readwrite mode,
   FD_SET(conn->sock, &fds);
 
   timeout.tv_sec = conn->timeout / 1000;
-  timeout.tv_usec = (conn->timout % 1000) * 1000;
+  timeout.tv_usec = (conn->timeout % 1000) * 1000;
 
   if (mode == READ)
     res = select(conn->sock + 1, &fds, NULL, NULL, &timeout);
@@ -598,7 +599,7 @@ static int s3_start_req (struct config *cfg, struct s3connection *conn,
            "\n"   // content type
            "%s\n" // date
            "%n/%s/%s/%s",
-           httpverb_to_string(verb), md5b64, date, &url_start, cfg->bucket,
+           httpverb_to_string(verb), md5b64, date, &url_start, cfg->s3bucket,
            folder, filename);
 
   snprintf(header, sizeof(header) - 1,

@@ -43,6 +43,7 @@ struct device {
 struct s3connection {
   char *host;
   char *port;
+  char *bucket;
   int sock;
   int is_ssl;
   int is_error;
