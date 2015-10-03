@@ -8,6 +8,8 @@
 
 #include "s3nbd.h"
 
+/* lock a chunk file to hinder s3nbd and/or syncer */
+
 static char *lock_type_to_string (int type)
 {
   switch (type) {
@@ -66,9 +68,9 @@ int main (int argc, char **argv)
     errx(1, "Usage: locktool <g|l|w> <r|w> <start> <end> /path/to/chunk");
 
   switch (argv[1][0]) {
-    case 'l': cmd = F_OFD_SETLK;  break;
-    case 'w': cmd = F_OFD_SETLKW; break;
-    default:  cmd = F_OFD_GETLK;  break;
+    case 'l': cmd = F_OFD_SETLK;  break; /* try to lock chunk file */
+    case 'w': cmd = F_OFD_SETLKW; break; /* lock and possibly wait for lock */
+    default:  cmd = F_OFD_GETLK;  break; /* report lock status */
   }
 
   type = (argv[2][0] == 'w' ? F_WRLCK : F_RDLCK);
