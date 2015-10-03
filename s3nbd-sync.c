@@ -451,14 +451,21 @@ static void setup_signals ()
 static void show_help ()
 {
   puts(
+"s3nbd-sync V" S3NBD_VERSION "\n"
+"\n"
 "Usage:\n"
 "\n"
-"syncer [-c <config file>] -p <pid file> [<max_used_pct> <min_used_pct>]\n"
-"syncer -h\n"
+"s3nbd-sync [-c <config file>] -p <pid file> [<max_used_pct> <min_used_pct>]\n"
+"s3nbd-sync -h\n"
 "\n"
 "  -c <config file>    read config options from specified file instead of\n"
 "                      " DEFAULT_CONFIGFILE "\n"
 "  -p <pid file>       save pid to this file\n"
+"  <max_used_pct>      run in eviction mode: if cache directory has more than\n"
+"                      <max_used_pct> percent diskspace in use, first upload,\n"
+"                      then delete chunks locally\n"
+"  <min_used_pct>      stop eviction if cache directory has no more than\n"
+"                      <min_used_pct> percent diskspace in use\n"
 "  -h                  show this help ;-)\n"
 );
 }

@@ -1101,10 +1101,12 @@ static int create_listen_socket (char *ip, char *port)
 static void show_help ()
 {
   puts(
+"s3nbdd V" S3NBD_VERSION "\n"
+"\n"
 "Usage:\n"
 "\n"
-"s3nbd [-c <config file>] -p <pid file> [-f]\n"
-"s3nbd -h\n"
+"s3nbdd [-c <config file>] -p <pid file> [-f]\n"
+"s3nbdd -h\n"
 "\n"
 "  -c <config file>    read config options from specified file instead of\n"
 "                      " DEFAULT_CONFIGFILE "\n"

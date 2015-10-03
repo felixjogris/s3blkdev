@@ -65,7 +65,8 @@ int main (int argc, char **argv)
   off_t start, end;
 
   if (argc != 6)
-    errx(1, "Usage: locktool <g|l|w> <r|w> <start> <end> /path/to/chunk");
+    errx(1, "locktool V" S3NBD_VERSION "\n\n"
+            "Usage: locktool <g|l|w> <r|w> <start> <end> /path/to/chunk");
 
   switch (argv[1][0]) {
     case 'l': cmd = F_OFD_SETLK;  break; /* try to lock chunk file */
