@@ -125,8 +125,8 @@ int load_config (char *configfile, struct config *cfg,
 
   /* set default config, prepare mutexes for connection slots */
   memset(cfg, 0, sizeof(*cfg));
-  strcpy(cfg->listen, "/tmp/s3nbd.sock");
-  strcpy(cfg->port, "1089");
+  strcpy(cfg->listen, "/tmp/s3nbdd.sock");
+  strcpy(cfg->port, "10809");
   cfg->num_io_threads = 8;
   cfg->num_s3fetchers = 2;
   cfg->s3timeout = 10000; // ms

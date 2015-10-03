@@ -4,8 +4,8 @@
 # default config
 #
 
-listen /tmp/s3nbd.sock
-port 1089
+listen /tmp/s3nbdd.sock
+port 10809
 workers 8
 fetchers 2
 
