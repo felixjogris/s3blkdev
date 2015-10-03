@@ -3,7 +3,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <sys/stat.h>
 #include <fcntl.h>
 #include <err.h>
 
@@ -60,7 +59,6 @@ static int do_lock (int fd, int cmd, int type, off_t start, off_t end)
 int main (int argc, char **argv)
 {
   int fd, i, type, cmd;
-  struct stat st;
   char buf[2], *chunk;
   off_t start, end;
 
@@ -81,11 +79,6 @@ int main (int argc, char **argv)
   fd = open(chunk, O_RDWR);
   if (fd < 0)
     err(1, "open(): %s", chunk);
-
-  if (stat(chunk, &st) != 0)
-    warn("stat(): %s", chunk);
-  else if (st.st_size != CHUNKSIZE)
-    warnx("filesize != CHUNKSIZE");
 
   switch (cmd) {
     case F_OFD_SETLKW:
