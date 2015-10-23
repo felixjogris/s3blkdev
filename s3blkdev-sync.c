@@ -17,7 +17,7 @@
 #include <gnutls/crypto.h>
 #include <snappy-c.h>
 
-#include "s3nbd.h"
+#include "s3blkdev.h"
 
 #define errdiex(fmt, params ...) { \
   syslog(LOG_ERR, "%s (%s:%i): " fmt "\n", \
@@ -229,7 +229,7 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
   }
 
   if (st.st_size != CHUNKSIZE) {
-    /* chunk is being fetched by s3nbd */
+    /* chunk is being fetched by s3blkdev */
     logwarnx("%s/%s: filesize %lu != CHUNKSIZE",
              dev->cachedir, name, st.st_size);
     goto ERROR2;
@@ -451,16 +451,19 @@ static void setup_signals ()
 static void show_help ()
 {
   puts(
-"s3nbd-sync V" S3NBD_VERSION "\n"
+"s3blkdev-sync V" S3NBD_VERSION "\n"
 "\n"
 "Usage:\n"
 "\n"
-"s3nbd-sync [-c <config file>] -p <pid file> [<max_used_pct> <min_used_pct>]\n"
-"s3nbd-sync -h\n"
+"s3blkdev-sync [-c <config file>] -p <pid file> <runtime_seconds>\n"
+"s3blkdev-sync [-c <config file>] -p <pid file> <max_used_pct> <min_used_pct>\n"
+"s3blkdev-sync -h\n"
 "\n"
 "  -c <config file>    read config options from specified file instead of\n"
 "                      " DEFAULT_CONFIGFILE "\n"
 "  -p <pid file>       save pid to this file\n"
+"  <runtime_seconds>   run in sync mode: upload any chunks which have been"
+"                      modified locally, stop after <runtime_seconds>\n"
 "  <max_used_pct>      run in eviction mode: if cache directory has more than\n"
 "                      <max_used_pct> percent diskspace in use, first upload,\n"
 "                      then delete chunks locally\n"
@@ -472,18 +475,20 @@ static void show_help ()
 
 int main (int argc, char **argv)
 {
-  int res;
+  int res, deleted_chunks;
   size_t num_chunks, size_chunks = 0, i;
   long l;
   struct chunk_entry *chunks = NULL;
   enum { SYNCER, EVICTOR } mode;
-  unsigned int min_used_pct = 100, max_used_pct = 100, errline, devnum;
+  unsigned int min_used_pct = 100, max_used_pct = 100, errline, devnum,
+               runtime_seconds = 0;
   char *configfile = DEFAULT_CONFIGFILE, *pidfile = NULL;
   const char *errstr;
   struct config cfg;
   struct device *dev;
+  time_t start_time;
 
-  openlog("syncer", LOG_NDELAY|LOG_PID, LOG_DAEMON);
+  openlog("s3blkdev-sync", LOG_NDELAY|LOG_PID, LOG_LOCAL1);
 
   while ((res = getopt(argc, argv, "c:f:hp:")) != -1) {
     switch (res) {
@@ -499,8 +504,9 @@ int main (int argc, char **argv)
     errdiex("Need pidfile. See -h for help.");
 
   switch (argc - optind) {
-    case 0:
+    case 1:
       mode = SYNCER;
+      runtime_seconds = atoi(argv[optind]);
       break;
     case 2:
       mode = EVICTOR;
@@ -536,15 +542,26 @@ int main (int argc, char **argv)
     if (mode == SYNCER) {
       /* just upload modified chunks, start with chunk that has been modified
          most recently */
-      for (l = num_chunks - 1; (l >= 0) && running; l--)
+      start_time = time(NULL);
+
+      for (l = num_chunks - 1; (l >= 0) && running; l--) {
         sync_chunk(&cfg, dev, chunks[l].name, SYNC_ONLY);
+
+        if (time(NULL) - start_time >= runtime_seconds)
+          break;
+      }
     } else if (eviction_needed(dev->cachedir, max_used_pct)) {
       /* first round of eviction, delete local chunks which have already been
          uploaded */
+      deleted_chunks = 0;
+
       for (i = 0; (i < num_chunks) && running; i++) {
-        if (eviction_needed(dev->cachedir, min_used_pct))
-          sync_chunk(&cfg, dev, chunks[i].name, DELETE_IF_EQUAL);
-        else
+        if (!eviction_needed(dev->cachedir, min_used_pct))
+          break;
+
+        sync_chunk(&cfg, dev, chunks[i].name, DELETE_IF_EQUAL);
+
+        if (++deleted_chunks >= 100)
           break;
       }
 

@@ -23,7 +23,7 @@
 #include <pthread.h>
 #include <snappy-c.h>
 
-#include "s3nbd.h"
+#include "s3blkdev.h"
 
 #define logerr(fmt, params ...) syslog(LOG_ERR, "%s (%s:%i): " fmt "\n", \
   __FUNCTION__, __FILE__, __LINE__, ## params)
@@ -401,9 +401,12 @@ static int io_open_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
       break;
 
 /* TODO */
-    while (fetch_chunk(arg->devicename, fd, name) != 0)
-      ;;
-//      goto ERROR1;
+    while (fetch_chunk(arg->devicename, fd, name) != 0) {
+      if (lseek(fd, 0, SEEK_SET) == (off_t) -1) {
+        logerr("lseek(): %s", strerror(errno));
+        goto ERROR1;
+      }
+    }
 
     break;
   }
@@ -1101,12 +1104,12 @@ static int create_listen_socket (char *ip, char *port)
 static void show_help ()
 {
   puts(
-"s3nbdd V" S3NBD_VERSION "\n"
+"s3blkdevd V" S3NBD_VERSION "\n"
 "\n"
 "Usage:\n"
 "\n"
-"s3nbdd [-c <config file>] -p <pid file> [-f]\n"
-"s3nbdd -h\n"
+"s3blkdevd [-c <config file>] -p <pid file> [-f]\n"
+"s3blkdevd -h\n"
 "\n"
 "  -c <config file>    read config options from specified file instead of\n"
 "                      " DEFAULT_CONFIGFILE "\n"
@@ -1264,7 +1267,7 @@ int main (int argc, char **argv)
     close(2);
   }
 
-  openlog("s3nbd", LOG_NDELAY|LOG_PID, LOG_DAEMON);
+  openlog("s3blkdevd", LOG_NDELAY|LOG_PID, LOG_DAEMON);
   syslog(LOG_INFO, "starting...\n");
 
   while (running) {

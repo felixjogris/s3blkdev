@@ -1,10 +1,10 @@
 #
-# s3nbd.conf
+# s3blkdev.conf
 #
 # default config
 #
 
-listen /tmp/s3nbdd.sock
+listen /tmp/s3blkdevd.sock
 port 10809
 workers 8
 fetchers 2

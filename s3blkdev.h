@@ -1,7 +1,7 @@
 #ifndef _S3NBD_H
 #define _S3NBD_H
 
-#define S3NBD_VERSION "0.1"
+#define S3NBD_VERSION "0.2"
 
 #include <limits.h>
 #include <time.h>
@@ -23,7 +23,7 @@
 #define CHUNKSIZE (8 * 1024 * 1024)
 #define COMPR_CHUNKSIZE (CHUNKSIZE + CHUNKSIZE/4)
 
-#define DEFAULT_CONFIGFILE "/usr/local/etc/s3nbd.conf"
+#define DEFAULT_CONFIGFILE "/usr/local/etc/s3blkdev.conf"
 #define MAX_IO_THREADS 128
 #define DEVNAME_SIZE 64
 

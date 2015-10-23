@@ -1,6 +1,6 @@
 #!/bin/sh
 
-ADDRESS="/tmp/s3nbd.sock"
+ADDRESS="/tmp/s3blkdevd.sock"
 DEVNAME="device1"
 BLOCKSIZE="4096"
 DEVICE="/dev/nbd0"

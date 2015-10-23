@@ -17,7 +17,7 @@
 #include <gnutls/crypto.h>
 #include <nettle/base64.h>
 
-#include "s3nbd.h"
+#include "s3blkdev.h"
 
 /* integer to string by preprocessor */
 #define XSTR(a) #a
@@ -125,7 +125,7 @@ int load_config (char *configfile, struct config *cfg,
 
   /* set default config, prepare mutexes for connection slots */
   memset(cfg, 0, sizeof(*cfg));
-  strcpy(cfg->listen, "/tmp/s3nbdd.sock");
+  strcpy(cfg->listen, "/tmp/s3blkdevd.sock");
   strcpy(cfg->port, "10809");
   cfg->num_io_threads = 8;
   cfg->num_s3fetchers = 2;
@@ -606,7 +606,7 @@ static int s3_start_req (struct config *cfg, struct s3connection *conn,
            "%s %s HTTP/1.1\r\n"
            "Host: %s\r\n"
            "Date: %s\r\n"
-           "User-Agent: s3nbd\r\n"
+           "User-Agent: s3blkdev\r\n"
            "Authorization: AWS %s:",
            httpverb_to_string(verb), string_to_sign + url_start, conn->host,
            date, cfg->s3accesskey);

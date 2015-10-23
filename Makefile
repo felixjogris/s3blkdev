@@ -1,28 +1,29 @@
 CFLAGS=-W -Wall -O3 -pipe
 LDFLAGS=-s
 
-TARGETS=s3nbdd locktool s3nbd-sync
+TARGETS=s3blkdevd locktool s3blkdev-sync
 
 all:	$(TARGETS)
 
-s3nbdd:	s3nbdd.o config.o
+s3blkdevd:	s3blkdevd.o config.o
 	$(CC) $(LDFLAGS) -o $@ $^ -lsnappy -lgnutls -lpthread -lnettle
 
-s3nbd-sync:	s3nbd-sync.o config.o
+s3blkdev-sync:	s3blkdev-sync.o config.o
 	$(CC) $(LDFLAGS) -o $@ $^ -lsnappy -lgnutls -lpthread -lnettle
 
 test:	test.o config.o
 	$(CC) $(LDFLAGS) -o $@ $^ -lsnappy -lgnutls -lpthread -lnettle
 
-locktool:	locktool.o
-	$(CC) $(LDFLAGS) -o $@ $^
+locktool:	locktool.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
-%.o:	%.c s3nbd.h
+%.o:	%.c s3blkdev.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-install:	s3nbdd s3nbd-sync s3nbd.conf.dist
-	install -m 0755 s3nbdd s3nbd-sync /usr/local/sbin/
-	install -m 0644 s3nbd.conf.dis /usr/local/etc/
+install:	s3blkdevd s3blkdev-sync s3blkdev.conf.dist
+	install -d -m 0755 /usr/local/etc /usr/local/sbin
+	install -m 0755 s3blkdevd s3blkdev-sync /usr/local/sbin/
+	install -m 0644 s3blkdev.conf.dist /usr/local/etc/
 
 clean:	; -rm *.o $(TARGETS) test
 

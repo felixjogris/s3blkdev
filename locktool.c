@@ -6,9 +6,9 @@
 #include <fcntl.h>
 #include <err.h>
 
-#include "s3nbd.h"
+#include "s3blkdev.h"
 
-/* lock a chunk file to hinder s3nbd and/or syncer */
+/* lock a chunk file to hinder s3blkdev and/or syncer */
 
 static char *lock_type_to_string (int type)
 {
