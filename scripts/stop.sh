@@ -1,7 +1,7 @@
 #!/bin/sh
 
-MNTPOINT="/mnt"
 DEVICE="/dev/nbd0"
+MNTPOINT="/mnt"
 
 # unmount file system
 umount "$MNTPOINT" && \
