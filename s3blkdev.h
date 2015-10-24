@@ -1,7 +1,7 @@
-#ifndef _S3NBD_H
-#define _S3NBD_H
+#ifndef _S3BLKDEV_H
+#define _S3BLKDEV_H
 
-#define S3NBD_VERSION "0.2"
+#define S3BLKDEV_VERSION "0.2"
 
 #include <limits.h>
 #include <time.h>

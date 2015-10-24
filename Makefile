@@ -17,6 +17,9 @@ test:	test.o config.o
 locktool:	locktool.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
+nbdrw:	nbdrw.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+
 %.o:	%.c s3blkdev.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
@@ -25,6 +28,6 @@ install:	s3blkdevd s3blkdev-sync s3blkdev.conf.dist
 	install -m 0755 s3blkdevd s3blkdev-sync /usr/local/sbin/
 	install -m 0644 s3blkdev.conf.dist /usr/local/etc/
 
-clean:	; -rm *.o $(TARGETS) test
+clean:	; -rm *.o $(TARGETS) test nbdrw
 
 .PHONY:	all install clean

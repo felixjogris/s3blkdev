@@ -1104,7 +1104,7 @@ static int create_listen_socket (char *ip, char *port)
 static void show_help ()
 {
   puts(
-"s3blkdevd V" S3NBD_VERSION "\n"
+"s3blkdevd V" S3BLKDEV_VERSION "\n"
 "\n"
 "Usage:\n"
 "\n"

@@ -14,5 +14,5 @@ int main ()
   if ((err = gnutls_cipher_init(&handle, GNUTLS_CIPHER_AES_256_CBC, &key, &key)) != 0)
     errx(1, "cipher_init: %s", gnutls_strerror(err));
 
-  
+  return 0;
 }

@@ -451,7 +451,7 @@ static void setup_signals ()
 static void show_help ()
 {
   puts(
-"s3blkdev-sync V" S3NBD_VERSION "\n"
+"s3blkdev-sync V" S3BLKDEV_VERSION "\n"
 "\n"
 "Usage:\n"
 "\n"
