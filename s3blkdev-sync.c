@@ -462,7 +462,7 @@ static void show_help ()
 "  -c <config file>    read config options from specified file instead of\n"
 "                      " DEFAULT_CONFIGFILE "\n"
 "  -p <pid file>       save pid to this file\n"
-"  <runtime_seconds>   run in sync mode: upload any chunks which have been"
+"  <runtime_seconds>   run in sync mode: upload any chunks which have been\n"
 "                      modified locally, stop after <runtime_seconds>\n"
 "  <max_used_pct>      run in eviction mode: if cache directory has more than\n"
 "                      <max_used_pct> percent diskspace in use, first upload,\n"
