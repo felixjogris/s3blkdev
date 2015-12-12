@@ -1,7 +1,7 @@
 #ifndef _S3BLKDEV_H
 #define _S3BLKDEV_H
 
-#define S3BLKDEV_VERSION "0.2"
+#define S3BLKDEV_VERSION "0.3"
 
 #include <limits.h>
 #include <time.h>
@@ -19,6 +19,9 @@
 #ifndef F_OFD_SETLKW
 #  define F_OFD_SETLKW 38
 #endif
+
+#define TCP_RMEM (1024*1024)
+#define TCP_WMEM (1024*1024)
 
 #define CHUNKSIZE (8 * 1024 * 1024)
 #define COMPR_CHUNKSIZE (CHUNKSIZE + CHUNKSIZE/4)
@@ -84,6 +87,7 @@ struct config {
 int load_config (char *configfile, struct config *cfg,
                  unsigned int *err_line, char const **errstr);
 int save_pidfile (char *pidfile);
+int set_socket_options (int sock);
 struct s3connection *s3_get_conn (struct config *cfg, unsigned int *conn_num,
                                   char const **errstr);
 void s3_release_conn (struct s3connection *conn);

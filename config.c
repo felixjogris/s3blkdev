@@ -7,6 +7,8 @@
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/select.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -281,10 +283,33 @@ int save_pidfile (char *pidfile)
   return 0;
 }
 
+int set_socket_options (int sock)
+{
+  int opt;
+
+  opt = 1;
+  if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt)) == -1)
+    return -1;
+
+  opt = 1;
+  if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt)) == -1)
+    return -1;
+
+  opt = TCP_RMEM;
+  if (setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &opt, sizeof(opt)) == -1)
+    return -1;
+
+  opt = TCP_WMEM;
+  if (setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &opt, sizeof(opt)) == -1)
+    return -1;
+
+  return 0;
+}
+
 static int s3_connect (struct s3connection *conn, char const **errstr)
 {
   struct addrinfo hints, *result, *walk;
-  int res, yes;
+  int res;
 
   memset(&hints, 0, sizeof(hints));
   hints.ai_family = AF_UNSPEC;
@@ -298,15 +323,10 @@ static int s3_connect (struct s3connection *conn, char const **errstr)
 
   for (walk = result; walk != NULL; walk = walk->ai_next) {
     conn->sock = socket(walk->ai_family, walk->ai_socktype, 0);
-    if (conn->sock >= 0) {
-      yes = 1;
-      res = setsockopt(conn->sock, SOL_SOCKET, SO_KEEPALIVE, &yes,
-                       sizeof(yes));
-
-      if ((res == 0) &&
-          (connect(conn->sock, walk->ai_addr, walk->ai_addrlen) == 0))
-        break;
-    }
+    if ((conn->sock >= 0) &&
+        set_socket_options(conn->sock) &&
+        (connect(conn->sock, walk->ai_addr, walk->ai_addrlen) == 0))
+      break;
 
     *errstr = strerror(errno);
     close(conn->sock);

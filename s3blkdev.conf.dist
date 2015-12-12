@@ -16,6 +16,8 @@ s3accesskey
 s3secretkey 
 s3bucket 
 s3timeout 10000
+# s3name
+# s3maxreqsperconn 100
 
 # [device1]
 # cachedir /ssd/device1
