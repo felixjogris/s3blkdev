@@ -288,10 +288,6 @@ int set_socket_options (int sock)
   int opt;
 
   opt = 1;
-  if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt)) == -1)
-    return -1;
-
-  opt = 1;
   if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt)) == -1)
     return -1;
 
@@ -431,7 +427,8 @@ struct s3connection *s3_get_conn (struct config *cfg, unsigned int *conn_num,
       return NULL;
     }
 
-    ret->host = (cfg->s3name[0] == '\0' ? cfg->s3hosts[host] : cfg->s3name);
+    ret->host = cfg->s3hosts[host];
+    ret->name = (cfg->s3name[0] == '\0' ? cfg->s3hosts[host] : cfg->s3name);
     ret->port = cfg->s3ports[port];
     ret->bucket = cfg->s3bucket;
     ret->timeout = cfg->s3timeout;
@@ -635,7 +632,7 @@ static int s3_start_req (struct config *cfg, struct s3connection *conn,
            "Date: %s\r\n"
            "User-Agent: s3blkdev\r\n"
            "Authorization: AWS %s:",
-           httpverb_to_string(verb), string_to_sign + url_start, conn->host,
+           httpverb_to_string(verb), string_to_sign + url_start, conn->name,
            date, cfg->s3accesskey);
 
   res = sha1_b64(cfg->s3secretkey, string_to_sign, header + strlen(header),
