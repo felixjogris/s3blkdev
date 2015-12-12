@@ -131,6 +131,7 @@ int load_config (char *configfile, struct config *cfg,
   cfg->num_s3fetchers = 2;
   cfg->s3timeout = 10000; // ms
   cfg->s3ssl = 1;
+  cfg->s3_max_reqs_per_conn = 100;
 
   for (i = 0; i < sizeof(cfg->s3conns)/sizeof(cfg->s3conns[0]); i++) {
     cfg->s3conns[i].sock = -1;
@@ -177,8 +178,10 @@ int load_config (char *configfile, struct config *cfg,
         sscanf(line, " port %7[0-9]", cfg->port) ||
         sscanf(line, " workers %hu", &cfg->num_io_threads) ||
         sscanf(line, " fetchers %hu", &cfg->num_s3fetchers) ||
+        sscanf(line, " s3maxreqsperconn %hu", &cfg->s3_max_reqs_per_conn) ||
         sscanf(line, " s3timeout %u", &cfg->s3timeout) ||
         sscanf(line, " s3ssl %hhu", &cfg->s3ssl) ||
+        sscanf(line, " s3name %127s", cfg->s3name) ||
         sscanf(line, " s3bucket %127s", cfg->s3bucket) ||
         sscanf(line, " s3accesskey %127s", cfg->s3accesskey) ||
         sscanf(line, " s3secretkey %127s", cfg->s3secretkey))
@@ -408,7 +411,7 @@ struct s3connection *s3_get_conn (struct config *cfg, unsigned int *conn_num,
       return NULL;
     }
 
-    ret->host = cfg->s3hosts[host];
+    ret->host = (cfg->s3name[0] == '\0' ? cfg->s3hosts[host] : cfg->s3name);
     ret->port = cfg->s3ports[port];
     ret->bucket = cfg->s3bucket;
     ret->timeout = cfg->s3timeout;
@@ -419,7 +422,11 @@ struct s3connection *s3_get_conn (struct config *cfg, unsigned int *conn_num,
 
       if ((cfg->s3ssl != 0) && (s3_tls_setup(ret, errstr) != 0))
         goto NEXT2;
+
+      ret->remaining_reqs = cfg->s3_max_reqs_per_conn;
     }
+
+    ret->remaining_reqs--;
 
     return ret;
 
@@ -433,7 +440,7 @@ struct s3connection *s3_get_conn (struct config *cfg, unsigned int *conn_num,
 
 void s3_release_conn (struct s3connection *conn)
 {
-  if (conn->is_error != 0) {
+  if ((conn->is_error != 0) || (conn->remaining_reqs == 0)) {
     if (conn->is_ssl != 0) {
       gnutls_bye(conn->tls_sess, GNUTLS_SHUT_RDWR);
       gnutls_deinit(conn->tls_sess);

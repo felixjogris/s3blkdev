@@ -50,6 +50,7 @@ struct s3connection {
   int is_ssl;
   int is_error;
   unsigned int timeout;
+  unsigned short remaining_reqs;
   gnutls_session_t tls_sess;
   gnutls_certificate_credentials_t tls_cred;
   pthread_mutex_t mtx;
@@ -61,6 +62,7 @@ struct config {
   char s3ports[4][8];
   unsigned short num_s3ports;
   unsigned char s3ssl;
+  char s3name[128];
   char s3bucket[128];
   char s3accesskey[128];
   char s3secretkey[128];
@@ -70,6 +72,7 @@ struct config {
   unsigned int s3timeout;
   unsigned short num_io_threads;
   unsigned short num_s3fetchers;
+  unsigned short s3_max_reqs_per_conn;
 
   struct device devs[128];
   unsigned short num_devices;

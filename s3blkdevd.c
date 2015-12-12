@@ -17,6 +17,8 @@
 #include <syslog.h>
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <gnutls/gnutls.h>
@@ -940,6 +942,25 @@ ERROR:
   return result;
 }
 
+static int set_client_socket_options (int sock)
+{
+  int opt;
+
+  opt = 1;
+  if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt)) == -1)
+    return -1;
+
+  opt = 1024*1024;
+  if (setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &opt, sizeof(opt)) == -1)
+    return -1;
+
+  opt = 1024*1024;
+  if (setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &opt, sizeof(opt)) == -1)
+    return -1;
+
+  return 0;
+}
+
 static void *client_worker (void *arg0)
 {
   struct client_thread_arg *arg = (struct client_thread_arg*) arg0;
@@ -954,6 +975,11 @@ static void *client_worker (void *arg0)
   }
 
   client_address(arg);
+
+  if (set_client_socket_options(arg->socket) != 0) {
+    logerr("setsockopt(): %s", strerror(res));
+    goto ERROR;
+  }
 
   if (nbd_handshake(arg) != 0)
     goto ERROR;
