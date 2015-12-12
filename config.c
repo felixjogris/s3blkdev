@@ -320,7 +320,7 @@ static int s3_connect (struct s3connection *conn, char const **errstr)
   for (walk = result; walk != NULL; walk = walk->ai_next) {
     conn->sock = socket(walk->ai_family, walk->ai_socktype, 0);
     if ((conn->sock >= 0) &&
-        set_socket_options(conn->sock) &&
+        (set_socket_options(conn->sock) == 0) &&
         (connect(conn->sock, walk->ai_addr, walk->ai_addrlen) == 0))
       break;
 
