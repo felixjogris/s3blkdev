@@ -541,7 +541,7 @@ static void *io_worker (void *arg0)
   if (block_signals() != 0)
     goto ERROR;
 
-  if ((res = pthread_setname_np(pthread_self(), "I/O worker")) != 0) {
+  if ((res = pthread_setname_np(pthread_self(), "s3blkdevd:io")) != 0) {
     logerr("pthread_setname_np(): %s", strerror(res));
     goto ERROR;
   }
@@ -948,7 +948,7 @@ static void *client_worker (void *arg0)
   if (block_signals() != 0)
     goto ERROR;
 
-  if ((res = pthread_setname_np(pthread_self(), "Client worker")) != 0) {
+  if ((res = pthread_setname_np(pthread_self(), "s3blkdevd:c")) != 0) {
     logerr("pthread_setname_np(): %s", strerror(res));
     goto ERROR;
   }
