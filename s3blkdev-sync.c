@@ -578,9 +578,6 @@ int main (int argc, char **argv)
           break;
       }
     }
-
-    free(chunks);
-    chunks = NULL;
   }
 
   gnutls_global_deinit();
