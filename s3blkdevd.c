@@ -47,6 +47,7 @@
 #define NBD_CMD_WRITE 1
 #define NBD_CMD_DISC 2
 #define NBD_CMD_FLUSH 3
+#define GEOM_MAGIC "GEOM_GATE       "
 
 const char const NBD_INIT_PASSWD[] = { 'N','B','D','M','A','G','I','C' };
 const char const NBD_OPTS_MAGIC[] =  { 'I','H','A','V','E','O','P','T' };
@@ -998,8 +999,125 @@ ERROR:
   return NULL;
 }
 
-static void *client_worker_geom (void *arg0)
+static int geom_client_worker_loop (struct client_thread_arg *arg)
 {
+  return 0;
+}
+
+static int geom_handshake (struct client_thread_arg *arg)
+{
+  struct {
+    char magic[16];
+    uint16_t version;
+    uint16_t error;
+  } __attribute__((packed)) geom_version;
+  struct {
+    char path[1025];
+    uint64_t flags;
+    uint16_t nconn;
+    uint32_t token;
+  } __attribute__((packed)) geom_cinit;
+  struct {
+    uint8_t flags;
+    uint64_t mediasize;
+    uint32_t sectorsize;
+    uint16_t error;
+  } __attribute__((packed)) geom_sinit;
+
+  if (read_all(arg->socket, &geom_version, sizeof(geom_version)) != 0)
+    return -1;
+
+  if (strncmp(geom_version.magic, GEOM_MAGIC, 16)) {
+    logerr("client %s no GEOM_MAGIC", arg->clientname);
+    return -1;
+  }
+
+  if (ntohs(geom_version.version) != 0) {
+    logerr("client %s unknown geom version %hu",
+           arg->clientname, ntohs(geom_version.version));
+    return -1;
+  }
+
+  geom_version.error = 0;
+
+  if (write_all(arg->socket, &geom_version, sizeof(geom_version)) != 0)
+    return -1;
+
+  if (read_all(arg->socket, &geom_cinit, sizeof(geom_cinit)) != 0)
+    return -1;
+
+  geom_cinit.path[1024] = '\0';
+
+  if ((arg->dev = get_device_by_name(geom_cinit.path)) == NULL) {
+    logerr("client %s unknown device %s", arg->clientname, geom_cinit.path);
+    return -1;
+  }
+
+  geom_sinit.flags = 0;
+  geom_sinit.mediasize = htonll(arg->dev->size);
+  geom_sinit.sectorsize = htonl(512);
+  geom_sinit.error = htons(0);
+
+  if (write_all(arg->socket, &geom_sinit, sizeof(geom_sinit)) != 0)
+    return -1;
+
+  return 0;
+}
+
+static void *geom_client_worker (void *arg0)
+{
+  struct client_thread_arg *arg = (struct client_thread_arg*) arg0;
+  int res;
+
+  if (block_signals() != 0)
+    goto ERROR;
+
+  if ((res = pthread_setname_np(pthread_self(), "s3blkdevd:geom")) != 0) {
+    logerr("pthread_setname_np(): %s", strerror(res));
+    goto ERROR;
+  }
+
+  client_address(arg);
+
+  if (set_socket_options(arg->socket) != 0) {
+    logerr("setsockopt(): %s", strerror(res));
+    goto ERROR;
+  }
+
+  if (geom_handshake(arg) != 0)
+    goto ERROR;
+
+  if ((res = pthread_mutex_init(&arg->socket_mtx, NULL)) != 0) {
+    logerr("pthread_mutex_init(): %s", strerror(res));
+    goto ERROR;
+  }
+
+  arg->cachedir_fd = open(arg->dev->cachedir, O_RDONLY|O_DIRECTORY);
+  if (arg->cachedir_fd < 0) {
+    logerr("open(): %s", strerror(errno));
+    goto ERROR1;
+  }
+
+  syslog(LOG_INFO, "client %s connecting to device %s\n", arg->clientname,
+         arg->dev->name);
+
+  while (geom_client_worker_loop(arg))
+    ;;
+
+  syslog(LOG_INFO, "client %s disconnecting from device %s\n", arg->clientname,
+         arg->dev->name);
+
+  if (close(arg->cachedir_fd) != 0)
+    logerr("close(): %s", strerror(errno));
+
+ERROR1:
+  if ((res = pthread_mutex_destroy(&arg->socket_mtx)) != 0)
+    logerr("pthread_mutex_destroy(): %s", strerror(res));
+
+ERROR:
+  if (close(arg->socket) != 0)
+    logerr("close(): %s", strerror(errno));
+
   free(arg0);
   return NULL;
 }
@@ -1251,7 +1369,7 @@ int main (int argc, char **argv)
 
   char *configfile = DEFAULT_CONFIGFILE, *pidfile = NULL;
   const char *errstr;
-  int foreground = 0, listen_socket = -1, listen_socket_geom = -1, res;
+  int foreground = 0, listen_socket = -1, geom_listen_socket = -1, res;
   unsigned int errline;
   pthread_attr_t thread_attr;
   fd_set rfds;
@@ -1294,9 +1412,9 @@ int main (int argc, char **argv)
 
   if (cfg.listen != '\0')
     listen_socket = create_listen_socket(cfg.listen, cfg.port);
-  if (cfg.listen_geom != '\0')
-    listen_socket_geom = create_listen_socket_inet(cfg.listen_geom,
-                                                   cfg.port_geom);
+  if (cfg.geom_listen != '\0')
+    geom_listen_socket = create_listen_socket_inet(cfg.geom_listen,
+                                                   cfg.geom_port);
   if (!foreground) {
     close(0);
     close(1);
@@ -1309,9 +1427,9 @@ int main (int argc, char **argv)
   while (running) {
     FD_ZERO(&rfds);
     FD_SET(listen_socket, &rfds);
-    FD_SET(listen_socket_geom, &rfds);
+    FD_SET(geom_listen_socket, &rfds);
 
-    res = select(MAX(listen_socket, listen_socket_geom) + 1, &rfds, NULL, NULL,
+    res = select(MAX(listen_socket, geom_listen_socket) + 1, &rfds, NULL, NULL,
                  NULL);
 
     if (res < 0) {
@@ -1330,9 +1448,9 @@ int main (int argc, char **argv)
       }
     }
 
-    if (FD_ISSET(listen_socket_geom, &rfds)) {
-      res = create_worker(listen_socket_geom, &thread_attr,
-                          &client_worker_geom);
+    if (FD_ISSET(geom_listen_socket, &rfds)) {
+      res = create_worker(geom_listen_socket, &thread_attr,
+                          &geom_client_worker);
       if (res != 0) {
         log_error("create_worker(): %s", strerror(res));
         break;

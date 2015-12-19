@@ -53,7 +53,7 @@ static int is_incomplete (char *line)
 
 static int validate_config (struct config *cfg, char const **errstr)
 {
-  if ((cfg->listen[0] == '\0') && (cfg->listen_geom[0] == '\0')) {
+  if ((cfg->listen[0] == '\0') && (cfg->geom_listen[0] == '\0')) {
     *errstr = "no or empty listen statements";
     return -1;
   }
@@ -63,7 +63,7 @@ static int validate_config (struct config *cfg, char const **errstr)
     return -1;
   }
 
-  if ((cfg->listen_geom[0] != '\0') && (cfg->port_geom[0] == '\0')) {
+  if ((cfg->geom_listen[0] != '\0') && (cfg->geom_port[0] == '\0')) {
     *errstr = "no or empty geom port statement";
     return -1;
   }
@@ -174,8 +174,8 @@ int load_config (char *configfile, struct config *cfg,
 
     if (sscanf(line, " listen %127s", cfg->listen) ||
         sscanf(line, " port %7[0-9]", cfg->port) ||
-        sscanf(line, " listen_geom %127s", cfg->listen_geom) ||
-        sscanf(line, " port_geom %7[0-9]", cfg->port_geom) ||
+        sscanf(line, " geom_listen %127s", cfg->geom_listen) ||
+        sscanf(line, " geom_port %7[0-9]", cfg->geom_port) ||
         sscanf(line, " workers %hu", &cfg->num_io_threads) ||
         sscanf(line, " fetchers %hu", &cfg->num_s3fetchers) ||
         sscanf(line, " s3maxreqsperconn %hu", &cfg->s3_max_reqs_per_conn) ||
