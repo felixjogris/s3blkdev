@@ -948,7 +948,7 @@ static void *client_worker (void *arg0)
   if (block_signals() != 0)
     goto ERROR;
 
-  if ((res = pthread_setname_np(pthread_self(), "s3blkdevd:c")) != 0) {
+  if ((res = pthread_setname_np(pthread_self(), "s3blkdevd:nbd")) != 0) {
     logerr("pthread_setname_np(): %s", strerror(res));
     goto ERROR;
   }
@@ -994,6 +994,12 @@ ERROR:
   if (close(arg->socket) != 0)
     logerr("close(): %s", strerror(errno));
 
+  free(arg0);
+  return NULL;
+}
+
+static void *client_worker_geom (void *arg0)
+{
   free(arg0);
   return NULL;
 }
@@ -1214,6 +1220,28 @@ static void daemonize ()
     err(1, "chdir(): /");
 }
 
+static int create_worker (int sock, pthread_attr_t *thread_attr,
+                          void *(*worker) (void*))
+{
+  pthread_t thread;
+  struct client_thread_arg *thread_arg;
+
+  thread_arg = malloc(sizeof(*thread_arg));
+  if (thread_arg == NULL)
+    return ENOMEM;
+
+  do {
+    thread_arg->addr_len = sizeof(thread_arg->addr);
+    thread_arg->socket = accept(sock, &thread_arg->addr,
+                                &thread_arg->addr_len);
+  } while ((thread_arg->socket < 0) && (errno == EINTR));
+
+  if (thread_arg->socket < 0)
+    return errno;
+
+  return pthread_create(&thread, thread_attr, worker, thread_arg);
+}
+
 int main (int argc, char **argv)
 {
 #define log_error(fmt, params ...) do { \
@@ -1223,11 +1251,10 @@ int main (int argc, char **argv)
 
   char *configfile = DEFAULT_CONFIGFILE, *pidfile = NULL;
   const char *errstr;
-  int foreground = 0, listen_socket, res;
+  int foreground = 0, listen_socket = -1, listen_socket_geom = -1, res;
   unsigned int errline;
   pthread_attr_t thread_attr;
-  pthread_t thread;
-  struct client_thread_arg *thread_arg;
+  fd_set rfds;
 
   while ((res = getopt(argc, argv, "c:fhp:")) != -1) {
     switch (res) {
@@ -1257,7 +1284,6 @@ int main (int argc, char **argv)
 
   increase_stacksize();
   setup_signals();
-  listen_socket = create_listen_socket(cfg.listen, cfg.port);
   launch_io_workers();
 
   if ((res = pthread_attr_init(&thread_attr)) != 0)
@@ -1266,6 +1292,11 @@ int main (int argc, char **argv)
   if (res != 0)
     errx(1, "pthread_attr_setdetachstate(): %s", strerror(res));
 
+  if (cfg.listen != '\0')
+    listen_socket = create_listen_socket(cfg.listen, cfg.port);
+  if (cfg.listen_geom != '\0')
+    listen_socket_geom = create_listen_socket_inet(cfg.listen_geom,
+                                                   cfg.port_geom);
   if (!foreground) {
     close(0);
     close(1);
@@ -1276,30 +1307,36 @@ int main (int argc, char **argv)
   syslog(LOG_INFO, "starting...\n");
 
   while (running) {
-    thread_arg = malloc(sizeof(*thread_arg));
-    if (thread_arg == NULL) {
-      log_error("%s", "malloc() failed");
+    FD_ZERO(&rfds);
+    FD_SET(listen_socket, &rfds);
+    FD_SET(listen_socket_geom, &rfds);
+
+    res = select(MAX(listen_socket, listen_socket_geom) + 1, &rfds, NULL, NULL,
+                 NULL);
+
+    if (res < 0) {
+      if (errno == EINTR)
+        continue;
+
+      log_error("select(): %s", strerror(errno));
       break;
     }
 
-    thread_arg->addr_len = sizeof(thread_arg->addr);
-    thread_arg->socket = accept(listen_socket, &thread_arg->addr,
-                                &thread_arg->addr_len);
-
-    if (thread_arg->socket < 0) {
-      if (errno != EINTR) {
-        log_error("accept(): %s", strerror(errno));
+    if (FD_ISSET(listen_socket, &rfds)) {
+      res = create_worker(listen_socket, &thread_attr, &client_worker);
+      if (res != 0) {
+        log_error("create_worker(): %s", strerror(res));
         break;
       }
-
-      free(thread_arg);
-      continue;
     }
 
-    res = pthread_create(&thread, &thread_attr, &client_worker, thread_arg);
-    if (res != 0) {
-      log_error("pthread_create(): %s", strerror(res));
-      break;
+    if (FD_ISSET(listen_socket_geom, &rfds)) {
+      res = create_worker(listen_socket_geom, &thread_attr,
+                          &client_worker_geom);
+      if (res != 0) {
+        log_error("create_worker(): %s", strerror(res));
+        break;
+      }
     }
   }
 

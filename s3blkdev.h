@@ -83,6 +83,8 @@ struct config {
 
   char listen[128];
   char port[8];
+  char listen_geom[128];
+  char port_geom[8];
 };
 
 int load_config (char *configfile, struct config *cfg,

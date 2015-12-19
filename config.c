@@ -53,13 +53,18 @@ static int is_incomplete (char *line)
 
 static int validate_config (struct config *cfg, char const **errstr)
 {
-  if (cfg->listen[0] == '\0') {
-    *errstr = "no or empty listen statement";
+  if ((cfg->listen[0] == '\0') && (cfg->listen_geom[0] == '\0')) {
+    *errstr = "no or empty listen statements";
     return -1;
   }
 
   if ((cfg->listen[0] != '/') && (cfg->port[0] == '\0')) {
     *errstr = "no or empty port statement and listen is not a unix socket";
+    return -1;
+  }
+
+  if ((cfg->listen_geom[0] != '\0') && (cfg->port_geom[0] == '\0')) {
+    *errstr = "no or empty geom port statement";
     return -1;
   }
 
@@ -124,16 +129,7 @@ int load_config (char *configfile, struct config *cfg,
   char line[1024], tmp[256];
 
   *err_line = 0;
-
-  /* set default config, prepare mutexes for connection slots */
   memset(cfg, 0, sizeof(*cfg));
-  strcpy(cfg->listen, "/tmp/s3blkdevd.sock");
-  strcpy(cfg->port, "10809");
-  cfg->num_io_threads = 8;
-  cfg->num_s3fetchers = 2;
-  cfg->s3timeout = 10000; // ms
-  cfg->s3ssl = 1;
-  cfg->s3_max_reqs_per_conn = 100;
 
   for (i = 0; i < sizeof(cfg->s3conns)/sizeof(cfg->s3conns[0]); i++) {
     cfg->s3conns[i].sock = -1;
@@ -178,6 +174,8 @@ int load_config (char *configfile, struct config *cfg,
 
     if (sscanf(line, " listen %127s", cfg->listen) ||
         sscanf(line, " port %7[0-9]", cfg->port) ||
+        sscanf(line, " listen_geom %127s", cfg->listen_geom) ||
+        sscanf(line, " port_geom %7[0-9]", cfg->port_geom) ||
         sscanf(line, " workers %hu", &cfg->num_io_threads) ||
         sscanf(line, " fetchers %hu", &cfg->num_s3fetchers) ||
         sscanf(line, " s3maxreqsperconn %hu", &cfg->s3_max_reqs_per_conn) ||
