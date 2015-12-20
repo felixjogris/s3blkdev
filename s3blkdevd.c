@@ -1001,6 +1001,50 @@ ERROR:
 
 static int geom_client_worker_loop (struct client_thread_arg *arg)
 {
+  struct __attribute__((packed)) {
+    uint32_t magic;
+    uint32_t type;
+    char handle[8];
+    uint64_t offs;
+    uint32_t len;
+  } req;
+  struct {
+    uint8_t cmd;
+    uint64_t offset;
+    uint32_t length;
+    uint64_t seq;
+    uint16_t error;
+  } __attribute__((packed)) geom_hdr;
+  fd_set rfds;
+  struct timeval timeout;
+  struct io_thread_arg *slot;
+  int res, result = -1;
+
+  FD_ZERO(&rfds);
+  FD_SET(arg->socket, &rfds);
+
+  timeout.tv_sec = 1;
+  timeout.tv_usec = 0;
+
+  res = select(arg->socket + 1, &rfds, NULL, NULL, &timeout);
+  if (res == 0)
+    return 0;
+
+  if (res < 0) {
+    logerr("select(): %s", strerror(errno));
+    goto ERROR;
+  }
+
+  if (!running)
+    goto ERROR;
+
+  slot = find_free_io_worker();
+  if (slot == NULL)
+    goto ERROR;
+
+  if (read_all(arg->socket, &geom_hdr, sizeof(geom_hdr)) != 0)
+    goto ERROR1;
+
   return 0;
 }
 
