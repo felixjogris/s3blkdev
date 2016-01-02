@@ -999,6 +999,7 @@ ERROR:
   return NULL;
 }
 
+#if 0
 static int geom_client_worker_loop (struct client_thread_arg *arg)
 {
   struct __attribute__((packed)) {
@@ -1047,6 +1048,7 @@ static int geom_client_worker_loop (struct client_thread_arg *arg)
 
   return 0;
 }
+#endif
 
 static int geom_handshake (struct client_thread_arg *arg)
 {
@@ -1145,8 +1147,10 @@ static void *geom_client_worker (void *arg0)
   syslog(LOG_INFO, "client %s connecting to device %s\n", arg->clientname,
          arg->dev->name);
 
+#if 0
   while (geom_client_worker_loop(arg))
     ;;
+#endif
 
   syslog(LOG_INFO, "client %s disconnecting from device %s\n", arg->clientname,
          arg->dev->name);
@@ -1235,6 +1239,9 @@ static int create_listen_socket_inet (char *ip, char *port)
   if (res != 0)
     err(1, "setsockopt()");
 
+  if (listen(listen_socket, 0) != 0)
+    err(1, "listen()");
+
   return listen_socket;
 }
 
@@ -1255,18 +1262,6 @@ static int create_listen_socket_unix (char *ip)
 
   if (bind(listen_socket, (struct sockaddr*) &sun, sizeof(sun)) != 0)
     err(1, "bind()");
-
-  return listen_socket;
-}
-
-static int create_listen_socket (char *ip, char *port)
-{
-  int listen_socket;
-
-  if (*ip == '/')
-    listen_socket = create_listen_socket_unix(ip);
-  else
-    listen_socket = create_listen_socket_inet(ip, port);
 
   if (listen(listen_socket, 0) != 0)
     err(1, "listen()");
@@ -1454,9 +1449,12 @@ int main (int argc, char **argv)
   if (res != 0)
     errx(1, "pthread_attr_setdetachstate(): %s", strerror(res));
 
-  if (cfg.listen != '\0')
-    listen_socket = create_listen_socket(cfg.listen, cfg.port);
-  if (cfg.geom_listen != '\0')
+  if (*cfg.listen == '/')
+    listen_socket = create_listen_socket_unix(cfg.listen);
+  else if (*cfg.listen != '\0')
+    listen_socket = create_listen_socket_inet(cfg.listen, cfg.port);
+
+  if (*cfg.geom_listen != '\0')
     geom_listen_socket = create_listen_socket_inet(cfg.geom_listen,
                                                    cfg.geom_port);
   if (!foreground) {

@@ -456,7 +456,9 @@ static void show_help ()
 "Usage:\n"
 "\n"
 "s3blkdev-sync [-c <config file>] -p <pid file> <runtime_seconds>\n"
+"              [<start_pct> <stop_pct>]\n"
 "s3blkdev-sync [-c <config file>] -p <pid file> <max_used_pct> <min_used_pct>\n"
+"              [<start_pct> <stop_pct>]\n"
 "s3blkdev-sync -h\n"
 "\n"
 "  -c <config file>    read config options from specified file instead of\n"
@@ -469,19 +471,23 @@ static void show_help ()
 "                      then delete chunks locally\n"
 "  <min_used_pct>      stop eviction if cache directory has no more than\n"
 "                      <min_used_pct> percent diskspace in use\n"
+"  <start_pct>         work on a subset of all chunks when running multiple\n"
+"                      instances of s3blkdev-sync; defaults to 0\n"
+"  <stop_pct>          stop after (stop_pct - start_pct)% of all chunks has\n"
+"                      been handled; defaults to 100\n"
 "  -h                  show this help ;-)\n"
 );
 }
 
 int main (int argc, char **argv)
 {
-  int res, deleted_chunks;
-  size_t num_chunks, size_chunks = 0, i;
-  long l;
+  int res;
+  size_t num_chunks, size_chunks = 0, i, start, stop;
   struct chunk_entry *chunks = NULL;
   enum { SYNCER, EVICTOR } mode;
   unsigned int min_used_pct = 100, max_used_pct = 100, errline, devnum,
-               runtime_seconds = 0;
+               runtime_seconds = 0, deleted_chunks, start_pct = 0,
+               stop_pct = 100;
   char *configfile = DEFAULT_CONFIGFILE, *pidfile = NULL;
   const char *errstr;
   struct config cfg;
@@ -504,10 +510,18 @@ int main (int argc, char **argv)
     errdiex("Need pidfile. See -h for help.");
 
   switch (argc - optind) {
+    case 3:
+      start_pct = atoi(argv[optind + 1]);
+      stop_pct = atoi(argv[optind + 2]);
+      /* fall thru */
     case 1:
       mode = SYNCER;
       runtime_seconds = atoi(argv[optind]);
       break;
+    case 4:
+      start_pct = atoi(argv[optind + 2]);
+      stop_pct = atoi(argv[optind + 3]);
+      /* fall thru */
     case 2:
       mode = EVICTOR;
       max_used_pct = atoi(argv[optind]);
@@ -518,6 +532,10 @@ int main (int argc, char **argv)
     default:
       errdiex("Wrong parameters. See -h for help.");
   }
+
+  if ((start_pct > 100) || (stop_pct > 100) || (stop_pct < start_pct))
+    errdiex("Parameters start_pct and stop_pct have wrong values. "
+            "See -h for help.");
 
   if (load_config(configfile, &cfg, &errline, &errstr) != 0)
     errdiex("Cannot load config file %s: %s (line %i)",
@@ -539,13 +557,19 @@ int main (int argc, char **argv)
 
     qsort(chunks, num_chunks, sizeof(chunks[0]), compare_atimes);
 
+    start = (num_chunks * start_pct) / 100;
+    stop = (num_chunks * stop_pct) / 100;
+
     if (mode == SYNCER) {
       /* just upload modified chunks, start with chunk that has been modified
          most recently */
       start_time = time(NULL);
 
-      for (l = num_chunks - 1; (l >= 0) && running; l--) {
-        sync_chunk(&cfg, dev, chunks[l].name, SYNC_ONLY);
+      i = stop;
+
+      while ((i > start) && running) {
+        i--;
+        sync_chunk(&cfg, dev, chunks[i].name, SYNC_ONLY);
 
         if (time(NULL) - start_time >= runtime_seconds)
           break;
@@ -555,7 +579,7 @@ int main (int argc, char **argv)
          uploaded */
       deleted_chunks = 0;
 
-      for (i = 0; (i < num_chunks) && running; i++) {
+      for (i = start; (i < stop) && running; i++) {
         if (!eviction_needed(dev->cachedir, min_used_pct))
           break;
 
@@ -567,7 +591,7 @@ int main (int argc, char **argv)
 
       /* second round of eviction, upload and delete local chunks until
          free space is below given percentage */
-      for (i = 0; (i < num_chunks) && running; i++) {
+      for (i = start; (i < stop) && running; i++) {
         /* chunk was deleted during first round of eviction */
         if (chunks[i].name[0] == '\0')
           continue;
