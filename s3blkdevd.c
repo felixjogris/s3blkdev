@@ -1468,8 +1468,12 @@ int main (int argc, char **argv)
 
   while (running) {
     FD_ZERO(&rfds);
-    FD_SET(listen_socket, &rfds);
-    FD_SET(geom_listen_socket, &rfds);
+
+    if (listen_socket > 0)
+      FD_SET(listen_socket, &rfds);
+
+    if (geom_listen_socket > 0)
+      FD_SET(geom_listen_socket, &rfds);
 
     res = select(MAX(listen_socket, geom_listen_socket) + 1, &rfds, NULL, NULL,
                  NULL);
@@ -1482,7 +1486,7 @@ int main (int argc, char **argv)
       break;
     }
 
-    if (FD_ISSET(listen_socket, &rfds)) {
+    if ((listen_socket > 0) && FD_ISSET(listen_socket, &rfds)) {
       res = create_worker(listen_socket, &thread_attr, &client_worker);
       if (res != 0) {
         log_error("create_worker(): %s", strerror(res));
@@ -1490,7 +1494,7 @@ int main (int argc, char **argv)
       }
     }
 
-    if (FD_ISSET(geom_listen_socket, &rfds)) {
+    if ((geom_listen_socket > 0) && FD_ISSET(geom_listen_socket, &rfds)) {
       res = create_worker(geom_listen_socket, &thread_attr,
                           &geom_client_worker);
       if (res != 0) {
@@ -1502,7 +1506,10 @@ int main (int argc, char **argv)
 
   running = 0;
 
-  if (close(listen_socket) != 0)
+  if ((geom_listen_socket > 0) && (close(geom_listen_socket) != 0))
+    log_error("close(): %s", strerror(errno));
+
+  if ((listen_socket > 0) && (close(listen_socket) != 0))
     log_error("close(): %s", strerror(errno));
 
   syslog(LOG_INFO, "waiting for I/O workers...\n");
