@@ -252,14 +252,14 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
   /* get md5 of chunk */
   res = gnutls_hash_fast(GNUTLS_DIG_MD5, compbuf, comprlen, local_md5);
   if (res != GNUTLS_E_SUCCESS) {
-    logwarn("gnutls_hash_fast(): %s", gnutls_strerror(res));
+    logwarnx("gnutls_hash_fast(): %s", gnutls_strerror(res));
     goto ERROR2;
   }
 
   /* fetch md5 (etag) */
   s3conn = s3_get_conn(cfg, &conn_num, &err_str);
   if (s3conn == NULL) {
-    logwarn("s3_get_conn(): %s", err_str);
+    logwarnx("s3_get_conn(): %s", err_str);
     goto ERROR2;
   }
 
@@ -267,7 +267,7 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
                    local_md5, &code, &contentlen, remote_md5, buf,
                    sizeof(buf));
   if (res != 0) {
-    logwarn("s3_request(): %s/%s/%s/%s: %s", s3conn->host, s3conn->bucket,
+    logwarnx("s3_request(): %s/%s/%s/%s: %s", s3conn->host, s3conn->bucket,
             dev->name, name, err_str);
     goto ERROR3;
   }
@@ -279,7 +279,7 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
     /* chunk not found */
     equal = 0;
   } else {
-    logwarn("s3_request(): %s/%s/%s/%s: HTTP status %hu", s3conn->host,
+    logwarnx("s3_request(): %s/%s/%s/%s: HTTP status %hu", s3conn->host,
             s3conn->bucket, dev->name, name, code);
     goto ERROR3;
   }
@@ -290,7 +290,7 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
 
     s3conn = s3_get_conn(cfg, &conn_num, &err_str);
     if (s3conn == NULL) {
-      logwarn("s3_get_conn(): %s", err_str);
+      logwarnx("s3_get_conn(): %s", err_str);
       goto ERROR2;
     }
 
@@ -298,13 +298,13 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
                      comprlen, local_md5, &code, &contentlen, remote_md5, buf,
                      sizeof(buf));
     if (res != 0) {
-      logwarn("s3_request(): %s/%s/%s/%s: %s", s3conn->host, s3conn->bucket,
+      logwarnx("s3_request(): %s/%s/%s/%s: %s", s3conn->host, s3conn->bucket,
               dev->name, name, err_str);
       goto ERROR3;
     }
 
     if (code != 200) {
-      logwarn("s3_request(): %s/%s/%s/%s: HTTP status %hu", s3conn->host,
+      logwarnx("s3_request(): %s/%s/%s/%s: HTTP status %hu", s3conn->host,
               s3conn->bucket, dev->name, name, code);
       goto ERROR3;
     }
