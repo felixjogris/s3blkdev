@@ -13,7 +13,7 @@ TMPFILE=`mktemp`
 # connect to nbd
 nbd-client -N "$DEVNAME" -b "$BLOCKSIZE" -p -u "$ADDRESS" "$DEVICE" && \
 # prepare external ext4 journal, preferably on an SSD
-mkfs.ext4 -O journal_dev "$JOURNALDEV" | tee "$TMPFILE" && \
+mkfs.ext4 -b 4096 -O journal_dev "$JOURNALDEV" | tee "$TMPFILE" && \
 # create ext4 filesystem on nbd, place journal on external device
 mkfs.ext4 -J device=UUID=`awk '{if (/UUID/) { print $3 }}' "$TMPFILE"` "$DEVICE" && \
 # file system check!

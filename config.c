@@ -561,7 +561,7 @@ static ssize_t s3_recv (struct s3connection *conn, void *buffer, size_t buflen,
     ret = read(conn->sock, buffer, buflen);
     if ((ret < 0) && (errno != EAGAIN) && (errno != EWOULDBLOCK) &&
         (errno != EINTR)) {
-      *errstr = gnutls_strerror(ret);
+      *errstr = strerror(errno);
       return -1;
     }
   } else for (;;) {
@@ -706,14 +706,15 @@ static int s3_finish_req (struct s3connection *conn, enum httpverb verb,
       return -1;
 
     readbytes += res;
+    header[readbytes] = '\0';
+
+    if ((body = strstr(header, "\r\n\r\n")) != NULL)
+      break;
+
     if (readbytes >= sizeof(header) - 1) {
       *errstr = "HTTP header too large";
       return -1;
     }
-
-    header[readbytes] = '\0';
-    if ((body = strstr(header, "\r\n\r\n")) != NULL)
-      break;
   }
 
   body += 4;
@@ -745,7 +746,7 @@ static int s3_finish_req (struct s3connection *conn, enum httpverb verb,
   readbytes -= body - header;
   memmove(buffer, body, readbytes);
 
-  if ((verb != HEAD) || (*code != 200)) {
+  if (verb != HEAD) {
     /* receive payload */
     while (readbytes < *contentlen) {
       res = s3_recv(conn, buffer + readbytes,
