@@ -21,6 +21,7 @@
 #include <sys/resource.h>
 #include <gnutls/gnutls.h>
 #include <pthread.h>
+#include <time.h>
 #include <snappy-c.h>
 
 #include "s3blkdev.h"
@@ -347,6 +348,7 @@ static int io_open_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
   char name[17];
   int fd;
   struct stat st;
+  struct timespec cooldown;
 
   snprintf(name, sizeof(name), "%016llx", (unsigned long long) chunk_no);
 
@@ -401,12 +403,16 @@ static int io_open_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
     if (st.st_size == CHUNKSIZE)
       break;
 
-/* TODO */
     while (fetch_chunk(arg->devicename, fd, name) != 0) {
       if (lseek(fd, 0, SEEK_SET) == (off_t) -1) {
         logerr("lseek(): %s", strerror(errno));
         goto ERROR1;
       }
+
+      /* XXX */
+      cooldown.tv_sec = 0;
+      cooldown.tv_nsec = 500000000L;
+      nanosleep(&cooldown, NULL);
     }
 
     break;
