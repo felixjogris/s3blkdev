@@ -410,8 +410,8 @@ static int io_open_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
       }
 
       /* XXX */
-      cooldown.tv_sec = 0;
-      cooldown.tv_nsec = 500000000L;
+      cooldown.tv_sec = 1;
+      cooldown.tv_nsec = 0;
       nanosleep(&cooldown, NULL);
     }
 
