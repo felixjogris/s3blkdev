@@ -6,7 +6,7 @@ TARGETS=s3blkdevd locktool s3blkdev-sync
 all:	$(TARGETS)
 
 s3blkdevd:	s3blkdevd.o config.o
-	$(CC) $(LDFLAGS) -o $@ $^ -lsnappy -lgnutls -lpthread -lnettle
+	$(CC) $(LDFLAGS) -o $@ $^ -lsnappy -lgnutls -lpthread -lnettle -lsystemd
 
 s3blkdev-sync:	s3blkdev-sync.o config.o
 	$(CC) $(LDFLAGS) -o $@ $^ -lsnappy -lgnutls -lpthread -lnettle
