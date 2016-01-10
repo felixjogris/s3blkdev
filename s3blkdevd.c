@@ -1282,13 +1282,12 @@ static void show_help ()
 "\n"
 "Usage:\n"
 "\n"
-"s3blkdevd [-c <config file>] -p <pid file> [-f]\n"
+"s3blkdevd [-c <config file>] [-p <pid file>]\n"
 "s3blkdevd -h\n"
 "\n"
 "  -c <config file>    read config options from specified file instead of\n"
 "                      " DEFAULT_CONFIGFILE "\n"
-"  -p <pid file>       save pid to this file\n"
-"  -f                  run in foreground, don't daemonize\n"
+"  -p <pid file>       daemonize and save pid to this file\n"
 "  -h                  show this help ;-)\n"
 );
 }
@@ -1409,28 +1408,24 @@ int main (int argc, char **argv)
 {
 #define log_error(fmt, params ...) do { \
   if (foreground) warnx(fmt "\n", ## params); \
-  else syslog(LOG_WARNING, fmt "\n", ## params); \
+  logerr(fmt "\n", ## params); \
 } while (0)
 
   char *configfile = DEFAULT_CONFIGFILE, *pidfile = NULL;
   const char *errstr;
-  int foreground = 0, listen_socket = -1, geom_listen_socket = -1, res;
+  int foreground = 1, listen_socket = -1, geom_listen_socket = -1, res;
   unsigned int errline;
   pthread_attr_t thread_attr;
   fd_set rfds;
 
-  while ((res = getopt(argc, argv, "c:fhp:")) != -1) {
+  while ((res = getopt(argc, argv, "c:hp:")) != -1) {
     switch (res) {
       case 'c': configfile = optarg; break;
-      case 'f': foreground = 1; break;
       case 'h': show_help(); return 0;
-      case 'p': pidfile = optarg; break;
+      case 'p': pidfile = optarg; foreground = 0; break;
       default: errx(1, "Unknown option '%i'. See -h for help.", res);
     }
   }
-
-  if (pidfile == NULL)
-    errx(1, "Need pidfile. See -h for help.");
 
   if (load_config(configfile, &cfg, &errline, &errstr) != 0)
     errx(1, "Cannot load config file %s: %s (line %i)",
@@ -1442,7 +1437,7 @@ int main (int argc, char **argv)
   if ((res = gnutls_global_init()) != GNUTLS_E_SUCCESS)
     errx(1, "gnutls_global_init(): %s", gnutls_strerror(res));
 
-  if (save_pidfile(pidfile) != 0)
+  if ((pidfile != NULL) && (save_pidfile(pidfile) != 0))
     err(1, "Cannot save pidfile %s", pidfile);
 
   increase_stacksize();
@@ -1524,7 +1519,7 @@ int main (int argc, char **argv)
   if ((cfg.listen[0] == '/') && (unlink(cfg.listen) != 0))
     log_error("unlink(): %s: %s", cfg.listen, strerror(errno));
 
-  if (unlink(pidfile) != 0)
+  if ((pidfile != NULL) && (unlink(pidfile) != 0))
     log_error("unlink(): %s: %s", pidfile, strerror(errno));
 
   gnutls_global_deinit();

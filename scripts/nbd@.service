@@ -1,0 +1,16 @@
+[Unit]
+Description=Network block device
+Documentation=man:nbd-client(8)
+Requires=s3blkdevd.service
+After=s3blkdevd.service
+ConditionFileNotEmpty=/etc/nbd-client
+Conflicts=shutdown.target
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+ExecStartPre=/sbin/modprobe nbd
+ExecStart=/bin/bash -c '. /etc/nbd-client && exec nbd-client -N "$${NBD_NAME[%i]}" $${NBD_EXTRA[%i]} "$${NBD_HOST[%i]}" "$${NBD_DEVICE[%i]}"'
+ExecStartPost=/bin/bash -c '. /etc/nbd-client && [ "$${NBD_TYPE[%i]}" != "f" ] && exit 0; fsck -n "$${NBD_DEVICE[%i]}" && exec mount "$${NBD_DEVICE[%i]}"'
+ExecStop=/bin/bash -c '. /etc/nbd-client && [ "$${NBD_TYPE[%i]}" != "f" ] && exit 0; umount "$${NBD_DEVICE[%i]}" && exec nbd-client -d "$${NBD_DEVICE[%i]}"'

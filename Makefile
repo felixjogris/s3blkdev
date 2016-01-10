@@ -27,6 +27,7 @@ install:	s3blkdevd s3blkdev-sync s3blkdev.conf.dist
 	install -d -m 0755 /usr/local/etc /usr/local/sbin
 	install -m 0755 s3blkdevd s3blkdev-sync /usr/local/sbin/
 	install -m 0644 s3blkdev.conf.dist /usr/local/etc/
+	-install -m 0644 scripts/s3blkdevd.service scripts/nbd@.service /lib/systemd/system/
 
 clean:	; -rm *.o $(TARGETS) test nbdrw
 
