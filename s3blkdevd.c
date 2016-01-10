@@ -23,6 +23,7 @@
 #include <pthread.h>
 #include <time.h>
 #include <snappy-c.h>
+#include <systemd/sd-daemon.h>
 
 #include "s3blkdev.h"
 
@@ -1466,6 +1467,8 @@ int main (int argc, char **argv)
 
   openlog("s3blkdevd", LOG_NDELAY|LOG_PID, LOG_DAEMON);
   syslog(LOG_INFO, "starting...\n");
+
+  sd_notify(0, "READY=1");
 
   while (running) {
     FD_ZERO(&rfds);

@@ -9,5 +9,7 @@ Conflicts=shutdown.target
 WantedBy=multi-user.target
 
 [Service]
+Type=notify
 ExecStart=/usr/local/sbin/s3blkdevd
+ExecStopPost=-/bin/rm /tmp/s3blkdevd.sock
 Restart=on-success
