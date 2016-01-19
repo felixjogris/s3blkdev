@@ -1,4 +1,4 @@
-CFLAGS=-W -Wall -O3 -pipe
+CFLAGS=-W -Wall -Wextra -march=native -O3 -pipe
 LDFLAGS=-s
 
 TARGETS=s3blkdevd locktool s3blkdev-sync
@@ -6,7 +6,7 @@ TARGETS=s3blkdevd locktool s3blkdev-sync
 all:	$(TARGETS)
 
 s3blkdevd:	s3blkdevd.o config.o
-	$(CC) $(LDFLAGS) -o $@ $^ -lsnappy -lgnutls -lpthread -lnettle -lsystemd
+	$(CC) $(LDFLAGS) -o $@ $^ -lsnappy -lgnutls -lpthread -lnettle
 
 s3blkdev-sync:	s3blkdev-sync.o config.o
 	$(CC) $(LDFLAGS) -o $@ $^ -lsnappy -lgnutls -lpthread -lnettle
