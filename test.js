@@ -5,7 +5,6 @@ var url = require("url");
 var fs = require("fs");
 var os = require("os");
 var child = require("child_process");
-var util = require("util");
 
 function logRequest(request) {
   console.log("%s %s %s",
@@ -13,40 +12,41 @@ function logRequest(request) {
               request.socket.remoteAddress, request.url);
 }
 
-function getInterfaceCounter(iface, counter) {
-  var path = "/sys/class/net/" + iface + "/statistics/" + counter + "_bytes";
-  var bytes = fs.readFileSync(path, "ascii");
-  bytes = bytes.replace(/\n$/, "");
-  return bytes;
-}
-
-function getInterfacesStats() {
-  var interfaces = os.networkInterfaces();
-  var stats = {};
-  for (var iface in interfaces) {
+function interfacesStats(ifaceNames, ifaceData, position, stats, callback) {
+  if (position < ifaceNames.length) {
     var idata = {
       "IPv4" : new Array(),
       "IPv6" : new Array(),
       "rx" : 0,
       "tx" : 0,
     };
+    var iface = ifaceNames[position];
     var hasAddresses = false;
-    interfaces[iface].filter(function(addr) {
+    ifaceData[iface].filter(function(addr) {
       return ((addr.family == "IPv4") || (addr.family == "IPv6")) &&
              !addr.internal;
     }).forEach(function(addr) {
       idata[addr.family].push(addr.address);
       hasAddresses = true;
     });
-    if (!hasAddresses) continue;
-    try {
-      idata["rx"] = getInterfaceCounter(iface, "rx");
-      idata["tx"] = getInterfaceCounter(iface, "tx");
-      stats[iface] = idata;
-    } catch (e) {
+    if (hasAddresses) {
+      var path = "/sys/class/net/" + iface + "/statistics/";
+      fs.readFile(path + "rx_bytes", "ascii", function(err, data) {
+        idata["rx"] = data.replace(/\n$/, "");
+        fs.readFile(path + "tx_bytes", "ascii", function(err, data) {
+          idata["tx"] = data.replace(/\n$/, "");
+          stats[iface] = idata;
+          interfacesStats(ifaceNames, ifaceData, position + 1, stats, callback);
+        });
+      });
+    } else {
+      process.nextTick(function() {
+        interfacesStats(ifaceNames, ifaceData, position + 1, stats, callback);
+      });
     }
+  } else {
+    callback();
   }
-  return stats;
 }
 
 var server = http.createServer(function(request, response) {
@@ -63,20 +63,23 @@ var server = http.createServer(function(request, response) {
 
   var path = url.parse(request.url);
   if (path.pathname == "/data") {
-    var result = {
-      "interfaces" : getInterfacesStats(),
-      "uptime"     : os.uptime(),
-      "loadavg"    : os.loadavg(),
-      "totalmem"   : os.totalmem(),
-      "freemem"    : os.freemem(),
-      "cpus"       : os.cpus(),
-      "utc"        : new Date().getTime(),
-      "diskfree"   : "",
-    };
-    child.exec("sleep 10; ls /wurst", function(err, stdout, stderr) {
-      result["diskfree"] = stdout;
-      response.writeHead(200);
-      response.end(JSON.stringify(result));
+    var ifaces = os.networkInterfaces();
+    var stats = {};
+    interfacesStats(Object.keys(ifaces), ifaces, 0, stats, function() {
+      child.exec("sleep 10; df -h", function(err, stdout, stderr) {
+        var result = {
+          "uptime"     : os.uptime(),
+          "loadavg"    : os.loadavg(),
+          "totalmem"   : os.totalmem(),
+          "freemem"    : os.freemem(),
+          "cpus"       : os.cpus(),
+          "utc"        : new Date().getTime(),
+          "diskfree"   : stdout,
+          "interfaces" : stats,
+        };
+        response.writeHead(200);
+        response.end(JSON.stringify(result));
+      });
     });
   } else {
     response.writeHead(200);
