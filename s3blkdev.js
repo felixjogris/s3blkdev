@@ -367,17 +367,21 @@ function td (number) {
 function doughnut (data, device, offset, display) {
   var id = display + device;
   var mount = data.devices[device][offset];
-  var canvas = document.getElementById("canvas" + id);
+  var container = document.getElementById(id);
 
   if (mount && data.dfree[mount]) {
-    if (!canvas) {
+    if (!container) {
+      var container = document.createElement("div");
+      container.id = id;
+      document.getElementById("devices").appendChild(container);
+
       var div = document.createElement("div");
       div.id = "text" + id;
-      document.getElementById("devices").appendChild(div);
+      container.appendChild(div);
       
-      canvas = document.createElement("canvas");
+      var canvas = document.createElement("canvas");
       canvas.id = "canvas" + id;
-      document.getElementById("devices").appendChild(canvas);
+      container.appendChild(canvas);
 
       var chart = new Chart(canvas.getContext("2d")).Doughnut([{
         value: 0,
@@ -397,7 +401,7 @@ function doughnut (data, device, offset, display) {
       devices[id] = chart;
     }
 
-    canvas.style.visibility = "visible";
+    container.style.visibility = "visible";
 
     if ((devices[id].segments[0].value != data.dfree[mount].used) ||
         (devices[id].segments[1].value != data.dfree[mount].avail)) {
@@ -410,8 +414,8 @@ function doughnut (data, device, offset, display) {
       div.innerHTML = display + ": " + to_human_ib(data.dfree[mount].used) + " used, " +
                       to_human_ib(data.dfree[mount].avail) + " available";
     }
-  } else if (canvas) {
-    canvas.style.visibility = "hidden";
+  } else if (container) {
+    container.style.visibility = "hidden";
   }
 }
 
