@@ -231,6 +231,9 @@ h1 {
   background-color:black;
   color:white;
 }
+h3 {
+  margin-bottom:0;
+}
 #errorPane {
   width:100%;
   height:100%;
@@ -273,19 +276,19 @@ h1 {
   position:absolute;
   top:4em;
   left:70%;
-  width:30%;
+  width:29%;
 }
 #network {
   position:absolute;
   top:4em;
   left:1%;
-  width:24%;
+  width:30%;
 }
 #devices {
   position:absolute;
   top:4em;
-  left:25%;
-  width:45%;
+  left:31%;
+  width:38%;
 }
 .barouter {
   margin:0;
@@ -296,6 +299,9 @@ h1 {
 }
 .barinner {
   height:0.5em;
+}
+.sub {
+  margin-top:1em;
 }
 </style>
 </head>
@@ -311,17 +317,18 @@ h1 {
 </div>
 
 <div id="sysinfo">
-<h2>System info</h2>
-<div>Uptime:</div>
+<h2>Status</h2>
+<h3>System info</h3>
+<div class="sub">Uptime:</div>
 <div id="uptime"></div>
-<div>Time:</div>
+<div class="sub">Time:</div>
 <div id="time"></div>
-<div>Memory:</div>
+<div class="sub">Memory:</div>
 <div class="barouter"><div id="memgraph" class="barinner" style="background-color:Chartreuse">&nbsp;</div></div>
 <div id="memory"></div>
-<div>CPUs:</div>
+<div class="sub">CPUs:</div>
 <div id="cpus"></div>
-<div>Load average:</div>
+<div class="sub">Load average:</div>
 <div id="loadavg"></div>
 </div>
 
@@ -360,30 +367,44 @@ function td (number) {
 function doughnut (data, device, offset, display) {
   var id = display + device;
   var mount = data.devices[device][offset];
-  var canvas = document.getElementById(id);
+  var canvas = document.getElementById("canvas" + id);
 
   if (mount && data.dfree[mount]) {
-    if (canvas) {
-      canvas.style.visibility = "visible";
-    } else {
+    if (!canvas) {
+      var div = document.createElement("div");
+      div.id = "text" + id;
+      document.getElementById("devices").appendChild(div);
+      
       canvas = document.createElement("canvas");
-      canvas.id = id;
+      canvas.id = "canvas" + id;
       document.getElementById("devices").appendChild(canvas);
 
-      var chart = new Chart(canvas.getContext("2d")).Doughnut([{
-        value: data.dfree[mount].used,
+      devices[id] = new Chart(canvas.getContext("2d")).Doughnut([{
+        value: 0,
         color: "DarkCyan",
         highlight: "#109B9B",
         label: display + " used",
       }, {
-        value: data.dfree[mount].avail,
+        value: 0,
         color: "DarkTurquoise",
         highlight: "#10DEE1",
         label: display + " available",
       }], {
         tooltipTemplate: "<%if (label){%><%=label%>: <%}%><%= to_human_ib(value) %>",
+        animationSteps: 50,
       });
+
     }
+
+    canvas.style.visibility = "visible";
+    devices[id].segments[0].value = data.dfree[mount].used;
+    devices[id].segments[1].value = data.dfree[mount].avail;
+    devices[id].update();
+
+    var div = document.getElementById("text" + id);
+    div.className = "sub";
+    div.innerHTML = display + ": " + to_human_ib(data.dfree[mount].used) + " used, " +
+                    to_human_ib(data.dfree[mount].avail) + " available";
   } else if (canvas) {
     canvas.style.visibility = "hidden";
   }
@@ -469,6 +490,7 @@ function processData (response) {
 
         var div = document.createElement("div");
         div.innerHTML = "IP addresses:";
+        div.className = "sub";
         document.getElementById("network").appendChild(div);
 
         div = document.createElement("div");
@@ -477,6 +499,7 @@ function processData (response) {
 
         div = document.createElement("div");
         div.innerHTML = "RX: ";
+        div.className = "sub";
         document.getElementById("network").appendChild(div);
 
         span = document.createElement("span");
@@ -495,6 +518,7 @@ function processData (response) {
 
         div = document.createElement("div");
         div.innerHTML = "TX: ";
+        div.className = "sub";
         document.getElementById("network").appendChild(div);
 
         span = document.createElement("span");
