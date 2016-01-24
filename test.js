@@ -130,11 +130,19 @@ function parseNbdClient(result, nbd_client) {
   delete result.listen;
 }
 
-function parseDfOutput(result, df, stdout) {
+function parseDfOutput(result, stdout) {
   var lines = stdout.split(/\r?\n/);
-  if (df.length + 1 == lines.length) {
-    for (var i = 0; i < df.length; i++) {
-      result.dfree[df[i]] = lines[1 + i].split(/\s+/);
+  for (var i = 1; i < lines.length; i++) {
+    var fields = lines[i].split(/\s+/);
+    if (fields.length == 3) {
+      Object.keys(result.dfree).forEach(function (d) {
+        if (d == fields[0]) {
+          result.dfree[d] = {
+            "used" : fields[1],
+            "avail": fields[2],
+          };
+        }
+      });
     }
   }
 }
@@ -166,7 +174,6 @@ var server = http.createServer(function(request, response) {
       "ifaces"   : {},
     };
 
-    var df;
     var queue = [function() {
       var ifaces = os.networkInterfaces();
       interfacesStats(result, Object.keys(ifaces), ifaces, 0, queue.shift());
@@ -183,11 +190,11 @@ var server = http.createServer(function(request, response) {
       }
       process.nextTick(queue.shift());
     }, function() {
-      df = Object.keys(result.dfree);
-      child.exec("df -B1 --output=size,used,avail " + df.join(" "), queue.shift());
+      var df = Object.keys(result.dfree).join(" ");
+      child.exec("df -B1 -x tmpfs -x devtmpfs --output=file,used,avail " + df, queue.shift());
     }, function(err, stdout, stderr) {
       if (!err) {
-        parseDfOutput(result, df, stdout);
+        parseDfOutput(result, stdout);
       }
       sendResponse(request, response, 200, "application/json", JSON.stringify(result));
     }];
@@ -207,12 +214,13 @@ var index_html = function (){/*
 <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN">
 <html>
 <head>
-<title>ZeitMachine X</title>
+<title>BLOCKstore</title>
 <style type="text/css">
 body {
   font-family:sans-serif;
   padding:0;
   margin:0;
+  background-color:Ivory;
 }
 h1 {
   position:fixed;
@@ -264,35 +272,42 @@ h1 {
 #sysinfo {
   position:absolute;
   top:4em;
-  left:67%;
-  height:45%;
+  left:70%;
+  width:30%;
 }
 #network {
   position:absolute;
   top:4em;
   left:1%;
-  width:65%;
-  height:45%;
+  width:24%;
+}
+#devices {
+  position:absolute;
+  top:4em;
+  left:25%;
+  width:45%;
 }
 .barouter {
   margin:0;
   padding:0;
-  height:0.2em;
-  width:10em;
+  height:0.5em;
+  width:15em;
   border:0.1em inset black;
 }
 .barinner {
-  height:0.2em;
+  height:0.5em;
 }
 </style>
 </head>
 <body>
-<h1>ZeitMachine X</h1>
+<h1>BLOCKstore</h1>
 
 <div id="network">
 <h2>Network</h2>
-<span id="netlegend"></span>
-<canvas id="netgraph" style="width:10%;height:100%"></canvas>
+</div>
+
+<div id="devices">
+<h2>Devices</h2>
 </div>
 
 <div id="sysinfo">
@@ -302,7 +317,7 @@ h1 {
 <div>Time:</div>
 <div id="time"></div>
 <div>Memory:</div>
-<div class="barouter"><div id="memgraph" class="barinner">&nbsp;</div></div>
+<div class="barouter"><div id="memgraph" class="barinner" style="background-color:Chartreuse">&nbsp;</div></div>
 <div id="memory"></div>
 <div>CPUs:</div>
 <div id="cpus"></div>
@@ -317,35 +332,8 @@ h1 {
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/1.0.2/Chart.js"></script>
 <script type="text/javascript">
 <!--
-var netctx = document.getElementById("netgraph").getContext("2d");
-var netchart = new Chart(netctx).Bar({
-  labels: [],
-  datasets: [{
-    label:"in",
-    fillColor:"green",
-    strokeColor:"green",
-    highlightFill:"green",
-    highlightStroke:"green",
-    data:[],
-  }, {
-    label:"out",
-    fillColor:"blue",
-    strokeColor:"blue",
-    highlightFill:"blue",
-    highlightStroke:"blue",
-    data:[],
-  }],
-}, {
-  barShowStroke: false,
-  barDatasetSpacing: 0,
-  scaleFontFamily: "sans-serif",
-  showTooltips: false,
-  scaleLabel: "<%=to_human(value)%>",
-  legendTemplate : "<% for (var i=0; i<datasets.length; i++){%><div><span style=\"color:<%=datasets[i].fillColor%>\">&diams;</span><%if(datasets[i].label){%> <%=datasets[i].label%>&nbsp;<%}%></div><%}%>"
-
-});
-document.getElementById("netlegend").innerHTML = netchart.generateLegend();
 var netgraphs = {};
+var devices = {};
 
 function to_human (bytes) {
   var suffixes = ["B", "kB", "MB", "GB"];
@@ -353,15 +341,58 @@ function to_human (bytes) {
     if (bytes < 1000) break;
     bytes /= 1000;
   }
-  return Math.round(bytes * 100)/100 + suffixes[i] + "/s";
+  return Math.round(bytes * 100)/100 + " " + suffixes[i] + "/s";
+}
+
+function to_human_ib (bytes) {
+  var suffixes = ["B", "KiB", "MiB", "GiB", "TiB"];
+  for (var i = 0; i < suffixes.length; i++) {
+    if (bytes < 1024) break;
+    bytes /= 1024;
+  }
+  return Math.round(bytes * 100)/100 + " " + suffixes[i];
 }
 
 function td (number) {
   return (number < 10 ? "0" + number : number);
 }
 
+function doughnut (data, device, offset, display) {
+  var id = display + device;
+  var mount = data.devices[device][offset];
+  var canvas = document.getElementById(id);
+
+  if (mount && data.dfree[mount]) {
+    if (canvas) {
+      canvas.style.visibility = "visible";
+    } else {
+      canvas = document.createElement("canvas");
+      canvas.id = id;
+      document.getElementById("devices").appendChild(canvas);
+
+      var chart = new Chart(canvas.getContext("2d")).Doughnut([{
+        value: data.dfree[mount].used,
+        color: "DarkCyan",
+        highlight: "#109B9B",
+        label: display + " used",
+      }, {
+        value: data.dfree[mount].avail,
+        color: "DarkTurquoise",
+        highlight: "#10DEE1",
+        label: display + " available",
+      }], {
+        tooltipTemplate: "<%if (label){%><%=label%>: <%}%><%= to_human_ib(value) %>",
+      });
+    }
+  } else if (canvas) {
+    canvas.style.visibility = "hidden";
+  }
+}
+
 function processData (response) {
   try {
+    // system info
+    // uptime
     var data = JSON.parse(response);
 
     var uptime = data.uptime;
@@ -376,6 +407,7 @@ function processData (response) {
     uptime = upday + "d " + uphour + "h " + upmin + "m " + upsec + "s";
     document.getElementById("uptime").innerHTML = uptime;
 
+    // time
     var now = new Date(data.utc);
     now = now.getFullYear() + "/" + td(now.getMonth() + 1) + "/" +
           td(now.getDate()) + " " + td(now.getHours()) + ":" +
@@ -383,19 +415,15 @@ function processData (response) {
     
     document.getElementById("time").innerHTML = now;
 
-    var memory = Math.floor(data.freemem / (1024*1024)) + " of " +
-                 Math.floor(data.totalmem / (1024*1024)) + " MiB free";
+    // memory
+    var memory = to_human_ib(data.freemem) + " of " +
+                 to_human_ib(data.totalmem) + " free";
     document.getElementById("memory").innerHTML = memory;
 
-    var memgraph = Math.floor(10 * data.freemem / data.totalmem);
+    var memgraph = 15.0 * data.freemem / data.totalmem;
     document.getElementById("memgraph").style.width = memgraph + "em";
 
-    var green = Math.floor(512 * data.freemem / data.totalmem);
-    var red = 512 - green;
-    if (green > 255) green = 255;
-    if (red > 255) red = 255;
-    document.getElementById("memgraph").style.backgroundColor = "rgb(" + red + "," + green + ",0)";
-
+    // cpus
     var cpumodels = {};
     for (var i = 0; i < data.cpus.length; i++) {
       cpumodels[data.cpus[i].model] = 0;
@@ -409,12 +437,14 @@ function processData (response) {
     });
     document.getElementById("cpus").innerHTML = cpus.join("<br>");
 
+    // loadavg
     var loadavgs = []
     data.loadavg.forEach(function (c) {
       loadavgs.push(Math.round(c * 100) / 100);
     });
     document.getElementById("loadavg").innerHTML = loadavgs.join(" ");
 
+    // network
     var maxspeed = 0;
     Object.keys(data.ifaces).forEach(function (iface) {
       if (netgraphs[iface]) {
@@ -422,51 +452,15 @@ function processData (response) {
         if (deltatime > 0.0) {
           var speed = (data.ifaces[iface].rx - netgraphs[iface].rx) / deltatime;
           if (speed > maxspeed) maxspeed = speed;
-          var speed = (data.ifaces[iface].tx - netgraphs[iface].tx) / deltatime;
+          speed = (data.ifaces[iface].tx - netgraphs[iface].tx) / deltatime;
           if (speed > maxspeed) maxspeed = speed;
         }
-      }
-    });
-
-    Object.keys(data.ifaces).forEach(function (iface) {
-      if (netgraphs[iface]) {
-        var deltatime = (data.utc - netgraphs[iface].utc) / 1000.0;
-        netgraphs[iface].utc = data.utc;
-        if (deltatime > 0.0) {
-          var pos = netgraphs[iface].pos;
-          var speed = (data.ifaces[iface].rx - netgraphs[iface].rx) / deltatime;
-          netchart.datasets[0].bars[pos].value = speed;
-
-          var div = document.getElementById("rxtext" + iface);
-          div.innerHTML = to_human(speed);
-          var div = document.getElementById("rxbar" + iface);
-          div.style.width = (speed * 10.0 / maxspeed) + "em";
-
-          speed = (data.ifaces[iface].tx - netgraphs[iface].tx) / deltatime;
-          netchart.datasets[1].bars[pos].value = speed;
-
-          var div = document.getElementById("txtext" + iface);
-          div.innerHTML = to_human(speed);
-          var div = document.getElementById("txbar" + iface);
-          div.style.width = (speed * 10.0 / maxspeed) + "em";
-        }
-        netgraphs[iface].rx = data.ifaces[iface].rx;
-        netgraphs[iface].tx = data.ifaces[iface].tx;
-
-        var div = document.getElementById("addr" + iface);
-        div.innerHTML = data.ifaces[iface].IPv4.join(", ");
-        if (data.ifaces[iface].IPv6.length > 0) {
-          div.innerHTML += ", " + data.ifaces[iface].IPv6.join(" ");
-        }
       } else {
-        var pos = Object.keys(netgraphs).length;
         netgraphs[iface] = {
-          "pos": pos,
           "utc": data.utc,
           "rx" : data.ifaces[iface].rx,
           "tx" : data.ifaces[iface].tx,
         };
-        netchart.addData([0, 0], iface);
 
         var h3 = document.createElement("h3");
         h3.id = "iface" + iface;
@@ -477,48 +471,92 @@ function processData (response) {
         div.innerHTML = "IP addresses:";
         document.getElementById("network").appendChild(div);
 
-        var div = document.createElement("div");
+        div = document.createElement("div");
         div.id = "addr" + iface;
         document.getElementById("network").appendChild(div);
 
-        var div = document.createElement("div");
-        div.innerHTML = "RX:";
+        div = document.createElement("div");
+        div.innerHTML = "RX: ";
         document.getElementById("network").appendChild(div);
+
+        span = document.createElement("span");
+        span.id = "rxtext" + iface;
+        div.appendChild(span);
 
         var barouter = document.createElement("div");
         barouter.className = "barouter";
         document.getElementById("network").appendChild(barouter);
 
         var barinner = document.createElement("div");
-        barinner.id = "rxbar" + iface;
+        barinner.id = "rxgraph" + iface;
         barinner.className = "barinner";
-        barinner.style.backgroundColor = "green";
+        barinner.style.backgroundColor = "Chartreuse";
         barouter.appendChild(barinner);
 
-        var div = document.createElement("div");
-        div.id = "rxtext" + iface;
+        div = document.createElement("div");
+        div.innerHTML = "TX: ";
         document.getElementById("network").appendChild(div);
 
-        var div = document.createElement("div");
-        div.innerHTML = "TX:";
-        document.getElementById("network").appendChild(div);
+        span = document.createElement("span");
+        span.id = "txtext" + iface;
+        div.appendChild(span);
 
-        var barouter = document.createElement("div");
+        barouter = document.createElement("div");
         barouter.className = "barouter";
         document.getElementById("network").appendChild(barouter);
 
-        var barinner = document.createElement("div");
-        barinner.id = "txbar" + iface;
+        barinner = document.createElement("div");
+        barinner.id = "txgraph" + iface;
         barinner.className = "barinner";
-        barinner.style.backgroundColor = "blue";
+        barinner.style.backgroundColor = "DodgerBlue";
         barouter.appendChild(barinner);
-
-        var div = document.createElement("div");
-        div.id = "txtext" + iface;
-        document.getElementById("network").appendChild(div);
       }
     });
-    netchart.update();
+
+    // network - maxspeed set, netgraphs filled
+    Object.keys(data.ifaces).forEach(function (iface) {
+      var deltatime = (data.utc - netgraphs[iface].utc) / 1000.0;
+
+      if (deltatime > 0.0) {
+        var speed = (data.ifaces[iface].rx - netgraphs[iface].rx) / deltatime;
+
+        var div = document.getElementById("rxtext" + iface);
+        div.innerHTML = to_human(speed);
+        div = document.getElementById("rxgraph" + iface);
+        div.style.width = (speed * 15.0 / maxspeed) + "em";
+
+        speed = (data.ifaces[iface].tx - netgraphs[iface].tx) / deltatime;
+
+        div = document.getElementById("txtext" + iface);
+        div.innerHTML = to_human(speed);
+        div = document.getElementById("txgraph" + iface);
+        div.style.width = (speed * 15.0 / maxspeed) + "em";
+      }
+
+      netgraphs[iface].utc = data.utc;
+      netgraphs[iface].rx = data.ifaces[iface].rx;
+      netgraphs[iface].tx = data.ifaces[iface].tx;
+
+      div = document.getElementById("addr" + iface);
+      div.innerHTML = data.ifaces[iface].IPv4.join(", ");
+      if (data.ifaces[iface].IPv6.length > 0) {
+        div.innerHTML += ", " + data.ifaces[iface].IPv6.join(" ");
+      }
+    });
+
+    // devices
+    Object.keys(data.devices).forEach(function (device) {
+      var h3 = document.getElementById("dev" + device);
+      if (!h3) {
+        h3 = document.createElement("h3");
+        h3.id = "dev" + device;
+        h3.innerHTML = device;
+        document.getElementById("devices").appendChild(h3);
+      }
+
+      doughnut(data, device, 0, "Cache");
+      doughnut(data, device, 1, "Filesystem");
+    });
   } catch (e) {
     toggleErrorPane("visible");
   }
