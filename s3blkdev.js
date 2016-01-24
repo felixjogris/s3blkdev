@@ -172,6 +172,7 @@ var server = http.createServer(function(request, response) {
       "devices"  : {},
       "dfree"    : {},
       "ifaces"   : {},
+      "processes": 0,
     };
 
     var queue = [function() {
@@ -195,6 +196,11 @@ var server = http.createServer(function(request, response) {
     }, function(err, stdout, stderr) {
       if (!err) {
         parseDfOutput(result, stdout);
+      }
+      child.exec("ps ax | grep s3blkdev-sync | grep -v grep | wc -l", queue.shift());
+    }, function(err, stdout, stderr) {
+      if (!err) {
+        result.processes = stdout.split(/\r?\n/)[0];
       }
       sendResponse(request, response, 200, "application/json", JSON.stringify(result));
     }];
@@ -330,6 +336,11 @@ h3 {
 <div id="cpus"></div>
 <div class="sub">Load average:</div>
 <div id="loadavg"></div>
+<h3>Services</h3>
+<div class="sub">Processes:</div>
+<div id="syncprocs"></div>
+<div class="sub">Version:</div>
+<div><a href="http://ogris.de/s3blkdev/">s3blkdev 0.5</a></div>
 </div>
 
 <div id="errorPane"></div>
@@ -473,6 +484,9 @@ function processData (response) {
       loadavgs.push(Math.round(c * 100) / 100);
     });
     document.getElementById("loadavg").innerHTML = loadavgs.join(" ");
+
+    // sync processes
+    document.getElementById("syncprocs").innerHTML = data.processes + " instances of s3blkdev-sync running";
 
     // network
     var maxspeed = 0;
