@@ -215,10 +215,10 @@ body {
   margin:0;
 }
 h1 {
+  position:fixed;
   text-align:center;
-  border-bottom:1px solid black;
   width:100%;
-  padding:10px 0 10px 0;
+  padding:0.2em 0 0.2em 0;
   margin:0;
   background-color:black;
   color:white;
@@ -249,45 +249,117 @@ h1 {
   color:white;
   font-weight:bold;
   font-size:large;
-  padding:5px 0px 5px 0px;
+  padding:0.1em 0em 0.1em 0em;
   margin:0;
   z-index:999;
 }
-#heartBeat {
+#heartbeat {
   position:fixed;
-  bottom:0px;
-  right:0px;
+  bottom:0;
+  right:0;
   font-weight:bold;
   margin:0;
+  color:red;
 }
-#sysInfo {
-  position:fixed;
-  top:100px;
-  right:150px;
+#sysinfo {
+  position:absolute;
+  top:4em;
+  left:67%;
+  height:45%;
+}
+#network {
+  position:absolute;
+  top:4em;
+  left:1%;
+  width:65%;
+  height:45%;
+}
+.barouter {
+  margin:0;
+  padding:0;
+  height:0.2em;
+  width:10em;
+  border:0.1em inset black;
+}
+.barinner {
+  height:0.2em;
 }
 </style>
 </head>
 <body>
 <h1>ZeitMachine X</h1>
-<div id="sysInfo">
+
+<div id="network">
+<h2>Network</h2>
+<span id="netlegend"></span>
+<canvas id="netgraph" style="width:10%;height:100%"></canvas>
+</div>
+
+<div id="sysinfo">
+<h2>System info</h2>
 <div>Uptime:</div>
 <div id="uptime"></div>
 <div>Time:</div>
 <div id="time"></div>
 <div>Memory:</div>
-<div style="margin:0;padding:0;height:10px;width:100px;border:1px inset black"><div id="memgraph" style="height:10px">&nbsp;</div></div>
+<div class="barouter"><div id="memgraph" class="barinner">&nbsp;</div></div>
 <div id="memory"></div>
 <div>CPUs:</div>
 <div id="cpus"></div>
 <div>Load average:</div>
 <div id="loadavg"></div>
 </div>
+
 <div id="errorPane"></div>
 <div id="errorText">Connection lost!</div>
-<div id="heartBeat">&hearts;</div>
+<div id="heartbeat">&hearts;</div>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/1.0.2/Chart.js"></script>
 <script type="text/javascript">
 <!--
+var netctx = document.getElementById("netgraph").getContext("2d");
+var netchart = new Chart(netctx).Bar({
+  labels: [],
+  datasets: [{
+    label:"in",
+    fillColor:"green",
+    strokeColor:"green",
+    highlightFill:"green",
+    highlightStroke:"green",
+    data:[],
+  }, {
+    label:"out",
+    fillColor:"blue",
+    strokeColor:"blue",
+    highlightFill:"blue",
+    highlightStroke:"blue",
+    data:[],
+  }],
+}, {
+  barShowStroke: false,
+  barDatasetSpacing: 0,
+  scaleFontFamily: "sans-serif",
+  showTooltips: false,
+  scaleLabel: "<%=to_human(value)%>",
+  legendTemplate : "<% for (var i=0; i<datasets.length; i++){%><div><span style=\"color:<%=datasets[i].fillColor%>\">&diams;</span><%if(datasets[i].label){%> <%=datasets[i].label%>&nbsp;<%}%></div><%}%>"
+
+});
+document.getElementById("netlegend").innerHTML = netchart.generateLegend();
+var netgraphs = {};
+
+function to_human (bytes) {
+  var prefixes = ["B", "kB", "MB", "GB"];
+  for (var i = 0; i < prefixes.length; i++) {
+    if (bytes < 1000) break;
+    bytes /= 1000;
+  }
+  var str = Math.floor(bytes) + prefixes[i] + "/s";
+  for (var i = str.length; i < 7; i++) {
+    str = "." + str;
+  }
+  return str;
+}
+
 function td (number) {
   return (number < 10 ? "0" + number : number);
 }
@@ -319,8 +391,8 @@ function processData (response) {
                  Math.floor(data.totalmem / (1024*1024)) + " MiB free";
     document.getElementById("memory").innerHTML = memory;
 
-    var memgraph = Math.floor(100 * data.freemem / data.totalmem);
-    document.getElementById("memgraph").style.width = memgraph + "px";
+    var memgraph = Math.floor(10 * data.freemem / data.totalmem);
+    document.getElementById("memgraph").style.width = memgraph + "em";
 
     var green = Math.floor(512 * data.freemem / data.totalmem);
     var red = 512 - green;
@@ -343,9 +415,86 @@ function processData (response) {
 
     var loadavgs = []
     data.loadavg.forEach(function (c) {
-      loadavgs.push(Math.round(c * 100) / 100 + 0.00);
+      loadavgs.push(Math.round(c * 100) / 100);
     });
     document.getElementById("loadavg").innerHTML = loadavgs.join(" ");
+
+    Object.keys(data.ifaces).forEach(function (iface) {
+      if (netgraphs[iface]) {
+        var deltatime = (data.utc - netgraphs[iface].utc) / 1000.0;
+        netgraphs[iface].utc = data.utc;
+        if (deltatime > 0.0) {
+          var pos = netgraphs[iface].pos;
+          var speed = (data.ifaces[iface].rx - netgraphs[iface].rx) / deltatime;
+          netchart.datasets[0].bars[pos].value = speed;
+          speed = (data.ifaces[iface].tx - netgraphs[iface].tx) / deltatime;
+          netchart.datasets[1].bars[pos].value = speed;
+        }
+        netgraphs[iface].rx = data.ifaces[iface].rx;
+        netgraphs[iface].tx = data.ifaces[iface].tx;
+      } else {
+        var pos = Object.keys(netgraphs).length;
+        netgraphs[iface] = {
+          "pos": pos,
+          "utc": data.utc,
+          "rx" : data.ifaces[iface].rx,
+          "tx" : data.ifaces[iface].tx,
+        };
+        netchart.addData([0, 0], iface);
+
+        var h3 = document.createElement("h3");
+        h3.id = "iface" + iface;
+        h3.innerHTML = iface;
+        document.getElementById("network").appendChild(h3);
+
+        var div = document.createElement("div");
+        div.innerHTML = "IP addresses:";
+        document.getElementById("network").appendChild(div);
+
+        var div = document.createElement("div");
+        div.id = "addr" + iface;
+        div.innerHTML = data.ifaces[iface].IPv4.join(", ");
+        if (data.ifaces[iface].IPv6.length > 0) {
+          div.innerHTML += ", " + data.ifaces[iface].IPv6.join(" ");
+        }
+        document.getElementById("network").appendChild(div);
+
+        var div = document.createElement("div");
+        div.innerHTML = "RX:";
+        document.getElementById("network").appendChild(div);
+
+        var barouter = document.createElement("div");
+        barouter.className = "barouter";
+        document.getElementById("network").appendChild(barouter);
+
+        var barinner = document.createElement("div");
+        barinner.id = "rxbar" + iface;
+        barinner.className = "barinner";
+        barouter.appendChild(barinner);
+
+        var div = document.createElement("div");
+        div.id = "rxtext" + iface;
+        document.getElementById("network").appendChild(div);
+
+        var div = document.createElement("div");
+        div.innerHTML = "TX:";
+        document.getElementById("network").appendChild(div);
+
+        var barouter = document.createElement("div");
+        barouter.className = "barouter";
+        document.getElementById("network").appendChild(barouter);
+
+        var barinner = document.createElement("div");
+        barinner.id = "tx" + iface;
+        barinner.className = "barinner";
+        barouter.appendChild(barinner);
+
+        var div = document.createElement("div");
+        div.id = "txtext" + iface;
+        document.getElementById("network").appendChild(div);
+      }
+    });
+    netchart.update();
   } catch (e) {
     toggleErrorPane("visible");
   }
@@ -361,8 +510,8 @@ function toggleErrorPane (visibility) {
 }
 
 function toggleHeartBeat () {
-  var heartbeat = document.getElementById("heartBeat");
-  heartbeat.style.color = (heartbeat.style.color == "red" ? "gray" : "red");
+  var heartbeat = document.getElementById("heartbeat");
+  heartbeat.style.visibility = (heartbeat.style.visibility == "hidden" ? "visible" : "hidden");
 }
 
 function startRequest () {
@@ -391,38 +540,3 @@ startRequest();
 </body>
 </html>
 */}.toString().slice(15,-4);
-/*
-var memctx = document.getElementById("memory").getContext("2d");
-var memchart = new Chart(memctx).Bar({
-  labels: [],
-  datasets: [{
-    label:"Total",
-    fillColor:"blue",
-    strokeColor:"blue",
-    highlightFill:"blue",
-    highlightStroke:"blue",
-    data:[0]
-  }, {
-    label:"Free",
-    fillColor:"green",
-    strokeColor:"green",
-    highlightFill:"green",
-    highlightStroke:"green",
-    data:[0]
-  }],
-}, {
-  scaleShowGridLines: false,
-  scaleShowHorizontalLines: false,
-  scaleShowVerticalLines: false,
-  barShowStroke: false,
-  barDatasetSpacing: 0,
-  scaleFontFamily: "sans-serif",
-  maintainAspectRatio: false,
-  animation: false,
-});
-
-    memchart.datasets[0].bars[0].value = data.totalmem / (1024*1024*1024);
-    memchart.datasets[1].bars[0].value = data.freemem / (1024*1024*1024);
-    memchart.update();
-
-*/
