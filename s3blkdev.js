@@ -324,7 +324,7 @@ h3 {
 
 <div id="sysinfo">
 <h2>Status</h2>
-<h3>System info</h3>
+<h3>System Info</h3>
 <div class="sub">Uptime:</div>
 <div id="uptime"></div>
 <div class="sub">Time:</div>
@@ -336,11 +336,11 @@ h3 {
 <div id="cpus"></div>
 <div class="sub">Load average:</div>
 <div id="loadavg"></div>
-<h3>Services</h3>
+<h3 style="margin-top:2em">Services</h3>
 <div class="sub">Processes:</div>
 <div id="syncprocs"></div>
 <div class="sub">Version:</div>
-<div><a href="http://ogris.de/s3blkdev/">s3blkdev 0.5</a></div>
+<div><a target="_blank" href="http://ogris.de/s3blkdev/">s3blkdev 0.5</a></div>
 </div>
 
 <div id="errorPane"></div>
