@@ -214,7 +214,7 @@ var server = http.createServer(function(request, response) {
     sendResponse(request, response, 404, "text/plain", "file not found");
   }
 });
-server.listen(8080);
+server.listen(80);
 
 var index_html = function (){/*
 <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN">
