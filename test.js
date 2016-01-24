@@ -348,16 +348,12 @@ document.getElementById("netlegend").innerHTML = netchart.generateLegend();
 var netgraphs = {};
 
 function to_human (bytes) {
-  var prefixes = ["B", "kB", "MB", "GB"];
-  for (var i = 0; i < prefixes.length; i++) {
+  var suffixes = ["B", "kB", "MB", "GB"];
+  for (var i = 0; i < suffixes.length; i++) {
     if (bytes < 1000) break;
     bytes /= 1000;
   }
-  var str = Math.floor(bytes) + prefixes[i] + "/s";
-  for (var i = str.length; i < 7; i++) {
-    str = "." + str;
-  }
-  return str;
+  return Math.round(bytes * 100)/100 + suffixes[i] + "/s";
 }
 
 function td (number) {
@@ -419,6 +415,19 @@ function processData (response) {
     });
     document.getElementById("loadavg").innerHTML = loadavgs.join(" ");
 
+    var maxspeed = 0;
+    Object.keys(data.ifaces).forEach(function (iface) {
+      if (netgraphs[iface]) {
+        var deltatime = (data.utc - netgraphs[iface].utc) / 1000.0;
+        if (deltatime > 0.0) {
+          var speed = (data.ifaces[iface].rx - netgraphs[iface].rx) / deltatime;
+          if (speed > maxspeed) maxspeed = speed;
+          var speed = (data.ifaces[iface].tx - netgraphs[iface].tx) / deltatime;
+          if (speed > maxspeed) maxspeed = speed;
+        }
+      }
+    });
+
     Object.keys(data.ifaces).forEach(function (iface) {
       if (netgraphs[iface]) {
         var deltatime = (data.utc - netgraphs[iface].utc) / 1000.0;
@@ -427,11 +436,28 @@ function processData (response) {
           var pos = netgraphs[iface].pos;
           var speed = (data.ifaces[iface].rx - netgraphs[iface].rx) / deltatime;
           netchart.datasets[0].bars[pos].value = speed;
+
+          var div = document.getElementById("rxtext" + iface);
+          div.innerHTML = to_human(speed);
+          var div = document.getElementById("rxbar" + iface);
+          div.style.width = (speed * 10.0 / maxspeed) + "em";
+
           speed = (data.ifaces[iface].tx - netgraphs[iface].tx) / deltatime;
           netchart.datasets[1].bars[pos].value = speed;
+
+          var div = document.getElementById("txtext" + iface);
+          div.innerHTML = to_human(speed);
+          var div = document.getElementById("txbar" + iface);
+          div.style.width = (speed * 10.0 / maxspeed) + "em";
         }
         netgraphs[iface].rx = data.ifaces[iface].rx;
         netgraphs[iface].tx = data.ifaces[iface].tx;
+
+        var div = document.getElementById("addr" + iface);
+        div.innerHTML = data.ifaces[iface].IPv4.join(", ");
+        if (data.ifaces[iface].IPv6.length > 0) {
+          div.innerHTML += ", " + data.ifaces[iface].IPv6.join(" ");
+        }
       } else {
         var pos = Object.keys(netgraphs).length;
         netgraphs[iface] = {
@@ -453,10 +479,6 @@ function processData (response) {
 
         var div = document.createElement("div");
         div.id = "addr" + iface;
-        div.innerHTML = data.ifaces[iface].IPv4.join(", ");
-        if (data.ifaces[iface].IPv6.length > 0) {
-          div.innerHTML += ", " + data.ifaces[iface].IPv6.join(" ");
-        }
         document.getElementById("network").appendChild(div);
 
         var div = document.createElement("div");
@@ -470,6 +492,7 @@ function processData (response) {
         var barinner = document.createElement("div");
         barinner.id = "rxbar" + iface;
         barinner.className = "barinner";
+        barinner.style.backgroundColor = "green";
         barouter.appendChild(barinner);
 
         var div = document.createElement("div");
@@ -485,8 +508,9 @@ function processData (response) {
         document.getElementById("network").appendChild(barouter);
 
         var barinner = document.createElement("div");
-        barinner.id = "tx" + iface;
+        barinner.id = "txbar" + iface;
         barinner.className = "barinner";
+        barinner.style.backgroundColor = "blue";
         barouter.appendChild(barinner);
 
         var div = document.createElement("div");
