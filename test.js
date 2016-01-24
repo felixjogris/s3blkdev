@@ -379,32 +379,37 @@ function doughnut (data, device, offset, display) {
       canvas.id = "canvas" + id;
       document.getElementById("devices").appendChild(canvas);
 
-      devices[id] = new Chart(canvas.getContext("2d")).Doughnut([{
+      var chart = new Chart(canvas.getContext("2d")).Doughnut([{
         value: 0,
         color: "DarkCyan",
         highlight: "#109B9B",
-        label: display + " used",
+        label: mount + " used",
       }, {
         value: 0,
         color: "DarkTurquoise",
         highlight: "#10DEE1",
-        label: display + " available",
+        label: mount + " available",
       }], {
         tooltipTemplate: "<%if (label){%><%=label%>: <%}%><%= to_human_ib(value) %>",
         animationSteps: 50,
       });
 
+      devices[id] = chart;
     }
 
     canvas.style.visibility = "visible";
-    devices[id].segments[0].value = data.dfree[mount].used;
-    devices[id].segments[1].value = data.dfree[mount].avail;
-    devices[id].update();
 
-    var div = document.getElementById("text" + id);
-    div.className = "sub";
-    div.innerHTML = display + ": " + to_human_ib(data.dfree[mount].used) + " used, " +
-                    to_human_ib(data.dfree[mount].avail) + " available";
+    if ((devices[id].segments[0].value != data.dfree[mount].used) ||
+        (devices[id].segments[1].value != data.dfree[mount].avail)) {
+      devices[id].segments[0].value = data.dfree[mount].used;
+      devices[id].segments[1].value = data.dfree[mount].avail;
+      devices[id].update();
+
+      var div = document.getElementById("text" + id);
+      div.className = "sub";
+      div.innerHTML = display + ": " + to_human_ib(data.dfree[mount].used) + " used, " +
+                      to_human_ib(data.dfree[mount].avail) + " available";
+    }
   } else if (canvas) {
     canvas.style.visibility = "hidden";
   }
