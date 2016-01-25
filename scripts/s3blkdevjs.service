@@ -1,0 +1,12 @@
+[Unit]
+Description=Webfrontend for s3blkdevd - NBD to S3 gateway
+Documentation=http://ogris.de/s3blkdev/
+Requires=local-fs.target
+Conflicts=shutdown.target
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+ExecStart=/usr/local/sbin/s3blkdev.js
+Restart=always

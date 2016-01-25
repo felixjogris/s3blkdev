@@ -168,6 +168,7 @@ var server = http.createServer(function(request, response) {
       "totalmem" : os.totalmem(),
       "freemem"  : os.freemem(),
       "cpus"     : os.cpus(),
+      "hostname" : os.hostname(),
       "utc"      : new Date().getTime(),
       "devices"  : {},
       "dfree"    : {},
@@ -312,7 +313,7 @@ h3 {
 </style>
 </head>
 <body>
-<h1>BLOCKstore</h1>
+<h1 id="h1">BLOCKstore</h1>
 
 <div id="network">
 <h2>Network</h2>
@@ -433,9 +434,13 @@ function doughnut (data, device, offset, display) {
 function processData (response) {
   try {
     // system info
-    // uptime
     var data = JSON.parse(response);
 
+    // hostname
+    document.title = "BLOCKstore on " + data.hostname;
+    document.getElementById("h1").innerHTML = "BLOCKstore on "+ data.hostname;
+
+    // uptime
     var uptime = data.uptime;
     var upsec = td(Math.floor(uptime % 60));
     uptime /= 60;
