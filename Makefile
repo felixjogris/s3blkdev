@@ -23,11 +23,11 @@ nbdrw:	nbdrw.c
 %.o:	%.c s3blkdev.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-install:	s3blkdevd s3blkdev-sync s3blkdev.conf.dist
+install:	s3blkdevd s3blkdev-sync s3blkdev.conf.dist s3blkdev.js
 	install -d -m 0755 /usr/local/etc /usr/local/sbin
-	install -m 0755 s3blkdevd s3blkdev-sync /usr/local/sbin/
+	install -m 0755 s3blkdevd s3blkdev-sync s3blkdev.js /usr/local/sbin/
 	install -m 0644 s3blkdev.conf.dist /usr/local/etc/
-	-install -m 0644 scripts/s3blkdevd.service scripts/nbd@.service /lib/systemd/system/
+	-install -m 0644 scripts/s3blkdevd.service scripts/nbd@.service scripts/s3blkdevjs.service /lib/systemd/system/
 
 clean:	; -rm *.o $(TARGETS) test nbdrw
 
