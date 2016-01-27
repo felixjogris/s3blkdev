@@ -632,7 +632,7 @@ function startRequest () {
   toggleHeartBeat();
 
   var xmlHttp = new XMLHttpRequest();
-  xmlHttp.timeout = 1000;
+  xmlHttp.timeout = 10000;
   xmlHttp.onreadystatechange = function () {
     if (xmlHttp.readyState == 4) {
       if (xmlHttp.status == 200) {
