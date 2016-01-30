@@ -221,7 +221,7 @@ var index_html = function (){/*
 <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN">
 <html>
 <head>
-<title>BLOCKstore</title>
+<title>s3blkdev</title>
 <style type="text/css">
 body {
   font-family:sans-serif;
@@ -313,7 +313,7 @@ h3 {
 </style>
 </head>
 <body>
-<h1 id="h1">BLOCKstore</h1>
+<h1 id="h1">s3blkdev</h1>
 
 <div id="network">
 <h2>Network</h2>
@@ -437,8 +437,8 @@ function processData (response) {
     var data = JSON.parse(response);
 
     // hostname
-    document.title = "BLOCKstore on " + data.hostname;
-    document.getElementById("h1").innerHTML = "BLOCKstore on "+ data.hostname;
+    document.title = "s3blkdev on " + data.hostname;
+    document.getElementById("h1").innerHTML = "s3blkdev on "+ data.hostname;
 
     // uptime
     var uptime = data.uptime;
