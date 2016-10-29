@@ -23,7 +23,7 @@
 #include <pthread.h>
 #include <time.h>
 #include <snappy-c.h>
-#if 0
+#ifdef USE_SYSTEMD
 #include <systemd/sd-daemon.h>
 #endif
 
@@ -1470,7 +1470,7 @@ int main (int argc, char **argv)
   openlog("s3blkdevd", LOG_NDELAY|LOG_PID, LOG_DAEMON);
   syslog(LOG_INFO, "starting...\n");
 
-#if 0
+#ifdef USE_SYSTEMD
   sd_notify(0, "READY=1");
 #endif
 
