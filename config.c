@@ -53,6 +53,8 @@ static int is_incomplete (char *line)
 
 static int validate_config (struct config *cfg, char const **errstr)
 {
+  unsigned int i;
+
   if ((cfg->listen[0] == '\0') && (cfg->geom_listen[0] == '\0')) {
     *errstr = "no or empty listen statements";
     return -1;
@@ -115,6 +117,13 @@ static int validate_config (struct config *cfg, char const **errstr)
   if (cfg->s3secretkey[0] == '\0') {
     *errstr = "no or empty s3secretkey statement";
     return -1;
+  }
+
+  for (i = 0; i < cfg->num_devices; i++) {
+    if (cfg->devs[i].size > ((unsigned long)1 << (8 * sizeof(int) - 1)) * 4096) {
+      *errstr = "Linux does not support NBD devices larger than 8 TB";
+      return -1;
+    }
   }
 
   return 0;
