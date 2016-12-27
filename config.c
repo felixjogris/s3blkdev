@@ -120,8 +120,8 @@ static int validate_config (struct config *cfg, char const **errstr)
   }
 
   for (i = 0; i < cfg->num_devices; i++) {
-    if (cfg->devs[i].size > ((unsigned long)1 << (8 * sizeof(int) - 1)) * 4096) {
-      *errstr = "Linux does not support NBD devices larger than 8 TB";
+    if (cfg->devs[i].size >= ((unsigned long)1 << (8 * sizeof(int) - 1)) * 4096) {
+      *errstr = "Linux does not support NBD devices of or larger than 8 TB";
       return -1;
     }
   }
