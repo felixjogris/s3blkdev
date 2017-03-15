@@ -223,8 +223,12 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
     goto ERROR2;
   }
 
-  if (fstat(fd, &st) != 0) {
-    logwarn("fstat(): %s/%s", dev->cachedir, name);
+  if (fstatat(dir_fd, name, &st, 0) != 0) {
+    /* chunk was removed while we waited for the lock */
+    if (errno != ENOENT) {
+      logwarn("fstat(): %s/%s", dev->cachedir, name);
+    }
+
     goto ERROR2;
   }
 
@@ -286,6 +290,7 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
 
   if (!equal && (evict != DELETE_IF_EQUAL)) {
     /* upload chunk */
+#if 0
     s3_release_conn(s3conn);
 
     s3conn = s3_get_conn(cfg, &conn_num, &err_str);
@@ -293,6 +298,7 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
       logwarnx("s3_get_conn(): %s", err_str);
       goto ERROR2;
     }
+#endif
 
     res = s3_request(cfg, s3conn, &err_str, PUT, dev->name, name, compbuf,
                      comprlen, local_md5, &code, &contentlen, remote_md5, buf,
