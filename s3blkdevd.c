@@ -349,7 +349,7 @@ static int io_open_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
                           uint64_t start_offs, uint64_t end_offs)
 {
   char name[17];
-  int fd, err;
+  int fd;
   struct stat st, st0;
   struct timespec cooldown;
 
@@ -366,7 +366,7 @@ static int io_open_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
     if (io_lock_chunk(fd, F_RDLCK, start_offs, end_offs) != 0)
       goto ERROR1;
 
-    if (fstatat(arg->cachedir_fd, name, &st, 0) != 0) {
+    if (fstatat(arg->cachedir_fd, name, &st0, 0) != 0) {
       if (errno != ENOENT) {
         logerr("fstatat(): %s", strerror(errno));
         goto ERROR1;
@@ -399,7 +399,7 @@ static int io_open_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
     if (io_lock_chunk(fd, F_WRLCK, 0, CHUNKSIZE) != 0)
       goto ERROR1;
 
-    if (fstatat(arg->cachedir_fd, name, &st, 0) != 0) {
+    if (fstatat(arg->cachedir_fd, name, &st0, 0) != 0) {
       if (errno != ENOENT) {
         logerr("fstatat(): %s", strerror(errno));
         goto ERROR1;
