@@ -350,6 +350,7 @@ static int io_open_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
 {
   char name[17];
   int fd, err;
+  struct stat st, st0;
   struct timespec cooldown;
 
   snprintf(name, sizeof(name), "%016llx", (unsigned long long) chunk_no);
