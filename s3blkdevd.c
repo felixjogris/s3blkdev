@@ -345,12 +345,48 @@ static int io_lock_chunk (int fd, short int type, uint64_t start_offs,
   return 0;
 }
 
+static int compare_fd_filename (struct io_thread_arg *arg, char *name, int fd)
+{
+  struct stat st, st0;
+  int err = 0;
+
+  if (fstatat(arg->cachedir_fd, name, &st0, 0) != 0) {
+    if (errno != ENOENT) {
+      logerr("fstatat(): %s", strerror(errno));
+      err = -1;
+    }
+
+    goto EXIT;
+  }
+
+  if (fstat(fd, &st) != 0) {
+    logerr("fstat(): %s", strerror(errno));
+    err = -1;
+    goto EXIT;
+  }
+
+  if (st.st_ino != st0.st_ino) {
+    /* the file we opened and the current file on disk are not the same */
+    goto EXIT;
+  }
+
+  if (st.st_size == CHUNKSIZE)
+    return 1;
+
+EXIT:
+  if (close(fd) != 0) {
+    logerr("close(): %s", strerror(errno));
+    err = -1;
+  }
+
+  return err;
+}
+
 static int io_open_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
                           uint64_t start_offs, uint64_t end_offs)
 {
   char name[17];
-  int fd;
-  struct stat st;
+  int fd, err;
   struct timespec cooldown;
 
   snprintf(name, sizeof(name), "%016llx", (unsigned long long) chunk_no);
@@ -366,22 +402,11 @@ static int io_open_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
     if (io_lock_chunk(fd, F_RDLCK, start_offs, end_offs) != 0)
       goto ERROR1;
 
-    if (fstatat(arg->cachedir_fd, name, &st, 0) != 0) {
-      if (errno != ENOENT) {
-        logerr("fstatat(): %s", strerror(errno));
-        goto ERROR1;
-      }
-
-      if (close(fd) != 0) {
-        logerr("close(): %s", strerror(errno));
-        goto ERROR;
-      }
-
+    err = compare_fd_filename(arg, name, fd);
+    if (err < 0)
+      goto ERROR;
+    if (err == 0)
       continue;
-    }
-
-    if (st.st_size == CHUNKSIZE)
-      break;
 
     if (io_lock_chunk(fd, F_UNLCK, start_offs, end_offs) != 0)
       goto ERROR1;
@@ -389,22 +414,11 @@ static int io_open_chunk (struct io_thread_arg *arg, uint64_t chunk_no,
     if (io_lock_chunk(fd, F_WRLCK, 0, CHUNKSIZE) != 0)
       goto ERROR1;
 
-    if (fstatat(arg->cachedir_fd, name, &st, 0) != 0) {
-      if (errno != ENOENT) {
-        logerr("fstatat(): %s", strerror(errno));
-        goto ERROR1;
-      }
-
-      if (close(fd) != 0) {
-        logerr("close(): %s", strerror(errno));
-        goto ERROR;
-      }
-
+    err = compare_fd_filename(arg, name, fd);
+    if (err < 0)
+      goto ERROR;
+    if (err == 0)
       continue;
-    }
-
-    if (st.st_size == CHUNKSIZE)
-      break;
 
     while (fetch_chunk(arg->devicename, fd, name) != 0) {
       if (lseek(fd, 0, SEEK_SET) == (off_t) -1) {

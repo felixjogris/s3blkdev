@@ -1,7 +1,7 @@
 #ifndef _S3BLKDEV_H
 #define _S3BLKDEV_H
 
-#define S3BLKDEV_VERSION "0.9"
+#define S3BLKDEV_VERSION "0.10"
 
 #include <limits.h>
 #include <time.h>

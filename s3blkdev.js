@@ -341,14 +341,14 @@ h3 {
 <div class="sub">Processes:</div>
 <div id="syncprocs"></div>
 <div class="sub">Version:</div>
-<div><a target="_blank" href="http://ogris.de/s3blkdev/">s3blkdev 0.9</a></div>
+<div><a target="_blank" href="http://ogris.de/s3blkdev/">s3blkdev 0.10</a></div>
 </div>
 
 <div id="errorPane"></div>
 <div id="errorText">Connection lost!</div>
 <div id="heartbeat">&hearts;</div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/1.0.2/Chart.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/1.1.1/Chart.js"></script>
 <script type="text/javascript">
 <!--
 var netgraphs = {};

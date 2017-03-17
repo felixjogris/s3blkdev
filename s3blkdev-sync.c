@@ -189,7 +189,7 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
 {
   int dir_fd, fd, equal, res;
   struct flock flk;
-  struct stat st;
+  struct stat st, st0;
   size_t comprlen;
   unsigned char local_md5[16], remote_md5[16];
   struct s3connection *s3conn;
@@ -223,12 +223,22 @@ static void sync_chunk (struct config *cfg, struct device *dev, char *name,
     goto ERROR2;
   }
 
-  if (fstatat(dir_fd, name, &st, 0) != 0) {
+  if (fstatat(dir_fd, name, &st0, 0) != 0) {
     /* chunk was removed while we waited for the lock */
     if (errno != ENOENT) {
-      logwarn("fstat(): %s/%s", dev->cachedir, name);
+      logwarn("fstatat(): %s/%s", dev->cachedir, name);
     }
 
+    goto ERROR2;
+  }
+
+  if (fstat(fd, &st) != 0) {
+    logwarn("fstat(): %s/%s", dev->cachedir, name);
+    goto ERROR2;
+  }
+
+  if (st.st_ino != st0.st_ino) {
+    /* the file we opened and the current file on disk are not the same */
     goto ERROR2;
   }
 
