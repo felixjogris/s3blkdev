@@ -341,7 +341,7 @@ h3 {
 <div class="sub">Processes:</div>
 <div id="syncprocs"></div>
 <div class="sub">Version:</div>
-<div><a target="_blank" href="http://ogris.de/s3blkdev/">s3blkdev 0.10</a></div>
+<div><a target="_blank" href="https://ogris.de/s3blkdev/">s3blkdev 0.10</a></div>
 </div>
 
 <div id="errorPane"></div>
