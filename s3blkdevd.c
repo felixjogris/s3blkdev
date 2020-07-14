@@ -1246,27 +1246,36 @@ static int create_listen_socket_inet (char *ip, char *port)
 
   for (walk = result;;) {
     listen_socket = socket(walk->ai_family, walk->ai_socktype, 0);
-    if ((listen_socket >= 0) &&
-        (bind(listen_socket, walk->ai_addr, walk->ai_addrlen) == 0))
+    if (listen_socket < 0)
+      continue;
+
+    yes = 1;
+    res = setsockopt(listen_socket, SOL_SOCKET, SO_REUSEPORT, &yes,
+                     sizeof(yes));
+    if (res != 0) {
+      close(listen_socket);
+      continue;
+    }
+
+    yes = 1;
+    res = setsockopt(listen_socket, SOL_SOCKET, SO_KEEPALIVE, &yes,
+                     sizeof(yes));
+    if (res != 0) {
+      close(listen_socket);
+      continue;
+    }
+
+    if (bind(listen_socket, walk->ai_addr, walk->ai_addrlen) == 0)
       break;
 
-    if (walk->ai_next == NULL)
+    walk = walk->ai_next;
+    if (walk == NULL)
       err(1, "bind()");
 
     close(listen_socket);
   }
 
   freeaddrinfo(result);
-
-  yes = 1;
-  res = setsockopt(listen_socket, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
-  if (res != 0)
-    err(1, "setsockopt()");
-
-  yes = 1;
-  res = setsockopt(listen_socket, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
-  if (res != 0)
-    err(1, "setsockopt()");
 
   if (listen(listen_socket, 0) != 0)
     err(1, "listen()");
