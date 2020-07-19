@@ -1233,7 +1233,7 @@ static void setup_signals ()
 
 static int create_listen_socket_inet (char *ip, char *port)
 {
-  int listen_socket, yes, res;
+  int listen_socket = -1, yes = 1, res;
   struct addrinfo hints, *result, *walk;
 
   memset(&hints, 0, sizeof(hints));
@@ -1244,41 +1244,27 @@ static int create_listen_socket_inet (char *ip, char *port)
   if ((res = getaddrinfo(ip, port, &hints, &result)) != 0)
     errx(1, "getaddrinfo(): %s", gai_strerror(res));
 
-  for (walk = result;;) {
+  for (walk = result; walk; walk = walk->ai_next) {
+    if (listen_socket >= 0)
+      close(listen_socket);
+
     listen_socket = socket(walk->ai_family, walk->ai_socktype, 0);
     if (listen_socket < 0)
       continue;
 
-    yes = 1;
-    res = setsockopt(listen_socket, SOL_SOCKET, SO_REUSEPORT, &yes,
-                     sizeof(yes));
-    if (res != 0) {
-      close(listen_socket);
-      continue;
-    }
-
-    yes = 1;
-    res = setsockopt(listen_socket, SOL_SOCKET, SO_KEEPALIVE, &yes,
-                     sizeof(yes));
-    if (res != 0) {
-      close(listen_socket);
-      continue;
-    }
-
-    if (bind(listen_socket, walk->ai_addr, walk->ai_addrlen) == 0)
+    if (!setsockopt(listen_socket, SOL_SOCKET, SO_REUSEPORT, &yes,
+                    sizeof(yes)) &&
+        !setsockopt(listen_socket, SOL_SOCKET, SO_KEEPALIVE, &yes,
+                    sizeof(yes)) &&
+        !bind(listen_socket, walk->ai_addr, walk->ai_addrlen) &&
+        !listen(listen_socket, 0))
       break;
-
-    walk = walk->ai_next;
-    if (walk == NULL)
-      err(1, "bind()");
-
-    close(listen_socket);
   }
 
-  freeaddrinfo(result);
+  if (walk == NULL)
+    err(1, "bind()");
 
-  if (listen(listen_socket, 0) != 0)
-    err(1, "listen()");
+  freeaddrinfo(result);
 
   return listen_socket;
 }
